@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/pingdotgg/t3code",
+  "revision": "531cee6f169578183e1b9d63032e5e9b68db9c03",
+  "files": 148,
+  "description": "Build-time ACP runtime source snapshot; MIT license in LICENSE. No external checkout required."
+}
