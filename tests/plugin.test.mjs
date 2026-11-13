@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import './client-options.test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -133,30 +134,51 @@ test('old delegation rows recover the child terminal state without replay or rew
   } finally { await manager.closeAllConnections(); fs.rmSync(dir, { recursive: true }); }
 });
 
-test('picker excludes disabled agents from tabs and choices, including stale directory groups', () => {
-  const source = fs.readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
-  const start = source.indexOf('const { categories, filterTabs, allChoices } = useMemo(() => {');
-  const end = source.indexOf('\n      const currentProviderId', start);
-  assert.ok(start >= 0 && end > start);
-  const project = vm.compileFunction(`${source.slice(start, end)}\nreturn { categories, filterTabs, allChoices };`,
-    ['state', 'acpCatalog', 'accountProviderName', 't', 'ACP_PREFIX', 'defaultEffortsList', 'useMemo']);
-  const agents = [
-    { id: 'enabled', name: 'Enabled', enabled: true, models: [{ id: 'ready' }] },
-    { id: 'disabled', name: 'Disabled', enabled: false, models: [{ id: 'hidden' }] },
-  ];
-  const groups = [
-    { id: 'native', name: 'API', models: [{ id: 'native-model' }] },
-    { id: 'acp:disabled', name: 'Stale disabled group', models: [{ id: 'stale' }] },
-  ];
-  const run = (catalog) => project({ groups }, catalog, 'Account', (key) => key, 'acp:', () => [], (fn) => fn());
-  const result = run(agents);
-  assert.deepEqual(Array.from(result.filterTabs, (tab) => tab.id), ['builtin', 'acp:enabled']);
-  assert.deepEqual(Array.from(result.allChoices, (choice) => choice.model.id), ['native-model', 'ready']);
-  const reenabled = run(agents.map((agent) => ({ ...agent, enabled: true })));
-  assert.ok(reenabled.filterTabs.some((tab) => tab.id === 'acp:disabled'));
-  assert.ok(reenabled.allChoices.some((choice) => choice.model.id === 'stale'));
-  const disabledAll = run(agents.map((agent) => ({ ...agent, enabled: false })));
-  assert.deepEqual(Array.from(disabledAll.filterTabs, (tab) => tab.id), ['builtin']);
+test('native directory routes and catalogs exclude disabled agents and hidden models', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-directory-'));
+  const storeFile = path.join(dir, 'agents.json');
+  saveAgentsConfig([
+    { id: 'enabled', name: 'Enabled', command: 'node', enabled: true, models: [{ id: 'ready' }, { id: 'hidden' }], hiddenModels: ['hidden'] },
+    { id: 'disabled', name: 'Disabled', command: 'node', enabled: false, models: [{ id: 'stale' }] },
+  ], storeFile);
+  let providers;
+  const handle = () => {};
+  handle.replace = value => { providers = value; };
+  const manager = createAcpAgentsManager({ llm: { registerAdapter(value) { providers = value; return handle; } } }, { storeFile });
+  try {
+    manager.syncAdapterRoutes();
+    assert.deepEqual(providers, ['acp:enabled']);
+    assert.deepEqual((await manager.adapter.listModels('acp:enabled')).map(model => model.id), ['ready']);
+    assert.deepEqual(await manager.adapter.listModels('acp:disabled'), []);
+    assert.deepEqual(manager.listDelegationAgents().map(agent => agent.id), ['enabled']);
+    await manager.handleRpc('agent/toggle', { id: 'enabled', enabled: false });
+    assert.deepEqual(providers, []);
+    assert.deepEqual(await manager.adapter.listModels('acp:enabled'), []);
+  } finally { await manager.dispose(); fs.rmSync(dir, { recursive: true }); }
+});
+
+test('native directory offers only advertised reasoning and leaves model defaults to the agent', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-directory-effort-'));
+  const storeFile = path.join(dir, 'agents.json');
+  const efforts = [{ id: 'high', name: 'High' }, { id: 'max', name: 'Maximum' }];
+  saveAgentsConfig([{ id: 'adjustable', name: 'Adjustable', enabled: true, models: [
+    { id: 'fixed', defaultEffort: 'medium', efforts: [] },
+    { id: 'dynamic', defaultEffort: 'high', efforts },
+    { id: 'stale-default', defaultEffort: 'medium', efforts },
+  ] }], storeFile);
+  const manager = createAcpAgentsManager({}, { storeFile });
+  try {
+    const models = await manager.adapter.listModels('acp:adjustable');
+    assert.equal(models[0].reasoning, undefined);
+    const fixed = await manager.adapter.resolveModel('acp:adjustable', 'fixed');
+    assert.equal(fixed.contextManagement, 'provider');
+    assert.equal(fixed.context, undefined, 'unknown upstream capacity must remain unknown');
+    for (const model of models.slice(1)) {
+      assert.deepEqual(model.reasoning.efforts.map(effort => effort.id), ['high', 'max']);
+      assert.equal(model.reasoning.defaultEffort, undefined, 'host model changes must not force a cached effort');
+      assert.deepEqual((await manager.adapter.resolveModel('acp:adjustable', model.id)).reasoning, model.reasoning);
+    }
+  } finally { await manager.dispose(); fs.rmSync(dir, { recursive: true }); }
 });
 
 test('agent switching seeds context and returning agents receive missed turns', () => {
@@ -240,6 +262,10 @@ test('configured agents share one discovery/delegation catalog and preserve pare
     assert.equal(calls[0].request.agentOptions.provider, 'acp:reviewer');
     assert.equal(calls[0].request.agentOptions.model, 'review-model');
     assert.equal(calls[0].request.maxDepth, 2);
+    assert.equal(calls[0].parent, parent, 'flattened host API must receive the exact parent');
+    assert.equal(calls[0].prompt, calls[0].request.prompt);
+    assert.equal(calls[0].agentOptions, calls[0].request.agentOptions);
+    assert.equal(calls[0].maxDepth, 2);
     assert.deepEqual(parent.options, { provider: 'native', model: 'main' });
     await assert.rejects(manager.delegate({ agent: 'missing', prompt: 'x' }, parent, signal, 'caller'), /not enabled/);
     await assert.rejects(manager.delegate({ agent: 'reviewer', prompt: '' }, parent, signal, 'caller'), /non-empty/);

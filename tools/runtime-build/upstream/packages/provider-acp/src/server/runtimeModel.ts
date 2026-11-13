@@ -1532,6 +1532,8 @@ export function parseSessionUpdateEvent(params: EffectAcpSchema.SessionNotificat
       break;
     }
     case "state_update": {
+      // Preserve v2 work state for consumers that attach post-prompt work.
+      events.push({ _tag: "UnknownUpdate", updateType: "state_update", rawPayload: params });
       if (upd.state === "idle" && upd.usage !== undefined && upd.usage !== null) {
         events.push({
           _tag: "UsageUpdated",

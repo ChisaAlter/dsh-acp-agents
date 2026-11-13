@@ -2172,35 +2172,50 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         : {};
       if (options.resumeSessionId) {
         sessionId = options.resumeSessionId;
-        if (
-          initializeResult.agentCapabilities?.loadSession === true &&
-          options.resumeMethod !== "resume"
-        ) {
+        const canLoad = initializeResult.agentCapabilities?.loadSession === true;
+        const canResume = initializeResult.agentCapabilities?.sessionCapabilities?.resume != null;
+        const load = () => {
           const loadPayload = {
             sessionId,
             cwd: options.cwd,
             ...additionalDirectories,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.LoadSessionRequest;
-          sessionSetupResult = yield* runLoadSessionWithReplayIdle(loadPayload, initializeResult);
-        } else if (initializeResult.agentCapabilities?.sessionCapabilities?.resume != null) {
+          return runLoadSessionWithReplayIdle(loadPayload, initializeResult);
+        };
+        const resume = () => {
           const resumePayload = {
             sessionId,
             cwd: options.cwd,
             ...additionalDirectories,
             mcpServers: sessionMcpServers(initializeResult),
           } satisfies EffectAcpSchema.ResumeSessionRequest;
-          sessionSetupResult = yield* runLoggedRequest(
+          return runLoggedRequest(
             "session/resume",
             resumePayload,
             acp.agent.resumeSession(resumePayload),
           );
-        } else {
+        };
+        if (!canLoad && !canResume) {
           return yield* new EffectAcpErrors.AcpRequestError({
             code: -32601,
             errorMessage: "ACP agent does not advertise session/load or session/resume support",
           });
         }
+        const resumeFirst = canResume && (options.resumeMethod === "resume" || !canLoad);
+        const first = resumeFirst ? resume : load;
+        const fallback = resumeFirst ? (canLoad ? load : undefined) : (canResume ? resume : undefined);
+        sessionSetupResult = yield* first().pipe(Effect.catch((error) => {
+          // Authentication belongs to setupSession's existing auth-required handler.
+          // A second activation method must not bypass that handshake.
+          if (!fallback || isAcpAuthenticationRequired(error)) return Effect.fail(error);
+          return fallback().pipe(Effect.catch((fallbackError) => Effect.fail(
+            new EffectAcpErrors.AcpRequestError({
+              code: fallbackError.code,
+              errorMessage: `${resumeFirst ? "resume" : "load"}: ${error.message}; ${resumeFirst ? "load" : "resume"}: ${fallbackError.message}`,
+            }),
+          )));
+        }));
       } else {
         const createPayload = {
           cwd: options.cwd,
@@ -2396,7 +2411,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     initialize: () => initialize,
     authenticate: (methodId) =>
       initialize.pipe(
-        Effect.andThen(
+        Effect.andThen(() =>
           runLoggedRequest("authenticate", { methodId }, acp.agent.authenticate({ methodId })),
         ),
         Effect.asVoid,

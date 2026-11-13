@@ -128,7 +128,7 @@ test('Antigravity account validation rejects configured-but-unadvertised ids wit
   const bundle = runtimeBundle();
   await bundle.initAgentRuntime({ cacheDir: path.join(dir, 'cache'), toolsDir: path.join(dir, 'tools'), paths: { cwd: dir, baseDir: dir, stateDir: dir, attachmentsDir: path.join(dir, 'attachments') } });
   try {
-  const config = [{ type: 'select', id: 'model', currentValue: 'flash-high', options: [{ value: 'flash-high', name: 'Flash High' }] }];
+  const config = [{ type: 'select', id: 'model', currentValue: 'flash-low', options: [{ value: 'flash-low', name: 'Flash Low' }, { value: 'flash-high', name: 'Flash High' }] }];
   const conn = new AcpSessionConnection({ agentConfig: { name: 'Antigravity', models: [{ id: 'flash' }] } });
   conn.ensureReady = async () => {};
   conn.api = { getConfigOptions: async () => config };

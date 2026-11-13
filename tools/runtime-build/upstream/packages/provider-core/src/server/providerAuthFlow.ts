@@ -26,6 +26,7 @@ import type * as ProviderAuth from "./auth.ts";
 export interface ProviderAuthFlowContext {
   readonly flowId: string;
   readonly expiresAt: number;
+  readonly forceReauthentication?: boolean;
   readonly returnUrl?: string;
   readonly callbackMode?: "server" | "client";
   readonly setInteraction: (
@@ -228,7 +229,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
           );
         }),
       ),
-    start: (owner, stopSessions = Effect.void, selectedMethodId, returnUrl, callbackMode) =>
+    start: (owner, stopSessions = Effect.void, selectedMethodId, returnUrl, callbackMode, forceReauthentication = false) =>
       lock.withPermit(
         Effect.gen(function* () {
           if (operation === "auth" && active?.owner === owner) return snapshot.value.state;
@@ -279,6 +280,7 @@ export const make = Effect.fn("ProviderAuthFlow.make")(function* (options: {
             yield* options.authenticate(methodId, {
               flowId: id,
               expiresAt: flow.expiresAt,
+              forceReauthentication,
               ...(returnUrl ? { returnUrl } : {}),
               ...(callbackMode ? { callbackMode } : {}),
               // Terminal sign-in updates this for every output chunk within the auth operation.

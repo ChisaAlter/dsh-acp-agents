@@ -5,15 +5,19 @@ import {
 } from "@t3tools/contracts";
 import type { AcpRegistrySettings } from "../settings.ts";
 import * as Crypto from "effect/Crypto";
+import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as Schema from "effect/Schema";
 import type * as AcpSchema from "effect-acp/compat";
+import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
@@ -21,10 +25,39 @@ import { normalizeAcpRegistryAuthMethods, normalizeAcpRegistryWebUrl } from "./p
 import * as AcpRegistrySupport from "./AcpRegistrySupport.ts";
 import * as AcpRegistryRuntimeCoordinator from "./AcpRegistryRuntimeCoordinator.ts";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
+import { sanitizeAcpStderrExcerpt } from "@t3tools/provider-acp/server/stderr";
+
+const isAcpRequestError = Schema.is(EffectAcpErrors.AcpRequestError);
+
+const MAX_ERROR_MESSAGE_LENGTH = 500;
+
+export const formatFailureDetail = (detail: string, cause?: unknown): string => {
+  const unwrapped = Cause.isCause(cause) ? Cause.squash(cause) : cause;
+  if (isAcpRequestError(unwrapped)) {
+    let message = unwrapped.errorMessage.trim();
+    const data = unwrapped.data;
+    const extra = typeof data === "object" && data !== null && "details" in data && typeof data.details === "string"
+      ? data.details.trim() : "";
+    if (extra && !message.includes(extra)) message = `${message}: ${extra}`;
+    message = sanitizeAcpStderrExcerpt(message, "")
+      .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[redacted]@")
+      .replace(/((?:access_token|refresh_token|api_key|password|client_secret)["']?\s*[:=]\s*["']?)[^\s"'&,)]+/gi, "$1[redacted]")
+      .replace(/(https?:\/\/[^\s?#]+)[?#][^\s]*/gi, "$1?[redacted]");
+    if (message.length > MAX_ERROR_MESSAGE_LENGTH) {
+      message = `${message.slice(0, MAX_ERROR_MESSAGE_LENGTH).trimEnd()}…`;
+    }
+    if (message.length > 0) {
+      const trimmed = detail.trimEnd();
+      const prefix = trimmed.endsWith(".") ? `${trimmed} ` : `${trimmed}. `;
+      return `${prefix}${message}`;
+    }
+  }
+  return detail;
+};
 
 type Runtime = Pick<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
-  "initialize" | "authenticate" | "start" | "handleElicitation" | "logout"
+  "initialize" | "authenticate" | "start" | "handleElicitation" | "handleUnknownExtNotification" | "logout"
 >;
 
 export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (options: {
@@ -47,7 +80,12 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
   const agentKey =
     options.settings.source === "local" ? `local:${options.instanceId}` : options.settings.agentId;
   const failure = (operation: string, detail: string, cause?: unknown) =>
-    new ProviderSetupError({ instanceId: options.instanceId, operation, detail, cause });
+    new ProviderSetupError({
+      instanceId: options.instanceId,
+      operation,
+      detail: formatFailureDetail(detail, cause),
+      cause,
+    });
   const resolve = catalog
     .resolve(options.settings, options.cwd, options.environment)
     .pipe(
@@ -125,6 +163,8 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
           name: method.name,
           description: method.description,
           type: method.type === "env_var" ? ("credentials" as const) : method.type,
+          ...(method.envVarNames ? { envVarNames: method.envVarNames } : {}),
+          ...(method.link ? { link: method.link } : {}),
         }));
       knownMethods = { version: inspected.version, methods: advertised };
       return advertised;
@@ -238,6 +278,15 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
         const runtime = yield* makeRuntime(resolved.spawn).pipe(
           Effect.provideService(Scope.Scope, runtimeScope),
         );
+        yield* runtime.handleUnknownExtNotification((method, params) => {
+          // This vendor extension is a browser handoff, not proof of auth.
+          // Standard ACP URL elicitation continues to use explicit consent.
+          if (method !== "_codebuddy.ai/authUrl" || typeof params !== "object" || params === null)
+            return Effect.void;
+          const authUrl = (params as { authUrl?: unknown }).authUrl;
+          const url = typeof authUrl === "string" ? normalizeAcpRegistryWebUrl(authUrl) : undefined;
+          return url ? context.setInteraction({ type: "browser", id: "agent-browser-handoff", url, requiresConsent: false }) : Effect.void;
+        });
         yield* runtime.handleElicitation((request) =>
           Effect.gen(function* () {
             if (
@@ -274,6 +323,14 @@ export const makeAcpRegistryAuth = Effect.fn("makeAcpRegistryAuth")(function* (o
         const method = initialized.authMethods?.find((method) => method.id === methodId);
         if (!method)
           return yield* failure("start", "The agent no longer advertises this sign-in method.");
+        if (!context.forceReauthentication) {
+          // Some ACP agents interpret authenticate as "log out, then sign in".
+          // A missing host confirmation must not destroy valid native credentials.
+          const existing = yield* runtime.start().pipe(Effect.result);
+          if (Result.isSuccess(existing)) return;
+          if (!isAcpRequestError(existing.failure) || existing.failure.code !== -32000)
+            return yield* failure("verify", "Could not verify the existing agent session.", existing.failure);
+        }
         if (method.type === "terminal") {
           yield* Scope.close(runtimeScope, Exit.void);
           yield* runTerminal(resolved, method, context).pipe(Effect.scoped);

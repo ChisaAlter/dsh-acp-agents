@@ -1,11 +1,10 @@
-/* dsh-acp-agents client: ACP Provider & Account Settings + Composer Agent-first ModelSelect. */
+/* dsh-acp-agents client: ACP account settings and native model-menu extensions. */
 window.__ModuleLoader__.load({
   id: 'dsh-acp-agents',
   factory: (require) => {
     const module = { exports: {} };
     const exports = module.exports;
     const react = require('react');
-    const reactDom = require('react-dom');
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives');
 
     const {
@@ -13,40 +12,50 @@ window.__ModuleLoader__.load({
       Fragment,
       useState,
       useEffect,
-      useLayoutEffect,
       useMemo,
       useCallback,
       useRef,
-      useId,
       useSyncExternalStore,
     } = react;
-    const { createPortal } = reactDom;
 
     const {
-      Button,
-      FlipText,
+      Button: HostButton,
       Input,
-      MenuGroup,
-      MenuSurface,
       Modal,
-      SettingsSelect,
       StateDot,
       Switch,
-      Toast,
-      observeStickyMenuGroups,
-      rankByName,
-      usePresence,
       IconCheckOutlineRegular,
       IconChevronDownOutlineRegular,
       IconChevronRightOutlineRegular,
-      IconCloseFillRegular,
-      IconPlusOutline16,
-      IconRefreshOutline16,
-      IconSettingsOutline16,
-      IconTrashOutline16,
-      IconWarningOutlineRegular,
       IconAgentPresetOutlineRegular,
     } = primitives;
+
+    function Button({ loading, disabled, icon, ...props }) {
+      // aria-busy is understood by both hosts; `loading` is desktop-only and
+      // otherwise leaks onto a native button without blocking repeat submits.
+      return h(HostButton, {
+        ...props,
+        disabled: Boolean(disabled || loading),
+        'aria-busy': loading || props['aria-busy'],
+        icon: loading ? h(StateDot, { state: 'ongoing', size: 14 }) : icon,
+      });
+    }
+
+    // The desktop shell extends the standard DSH primitives namespace. Keep
+    // those implementations when present without requiring them for activation.
+    const SettingsSelect = primitives.SettingsSelect ?? function NativeSettingsSelect({ options, onChange, variant, className, ...props }) {
+      return h('select', {
+        ...props,
+        className: ['dsh-acp-settings-select', className].filter(Boolean).join(' '),
+        onChange: (event) => onChange?.(event.currentTarget.value),
+      }, options.map((option) => h('option', {
+        key: option.id, value: option.id, disabled: option.disabled,
+      }, option.label)));
+    };
+    const IconPlusOutline16 = primitives.IconPlusOutline16 ?? primitives.IconPlusOutlineRegular;
+    const IconRefreshOutline16 = primitives.IconRefreshOutline16 ?? primitives.IconRefreshOutlineRegular;
+    const IconSettingsOutline16 = primitives.IconSettingsOutline16 ?? primitives.IconSettingsOutlineRegular;
+    const IconTrashOutline16 = primitives.IconTrashOutline16 ?? primitives.IconTrashOutlineRegular;
 
     const NS = 'dsh-acp-agents';
     const SETTINGS_SECTION_ID = 'acp-agents';
@@ -162,10 +171,13 @@ window.__ModuleLoader__.load({
       'login.started': '已发起登录流程，请在浏览器中完成授权。',
       'login.callbackHint': '若浏览器中的 localhost 页面打不开，把完整链接粘贴到这里。',
       'login.waitingBrowser': '正在等待浏览器授权…',
+      'login.openBrowser': '打开浏览器授权',
       'login.flowFailed': '登录失败，请重新开始。',
       'login.flowExpired': '登录已过期，请重新开始。',
       'login.terminalPh': '输入内容后回车发送到登录终端…',
       'logout.done': '已退出登录：{name}',
+      'logout.partial': '已清除本地 API 凭据；Agent 退出登录失败：{message}',
+      'options.needsSession': '发送首条消息后，可为此会话设置选项。',
       'provider.account': 'DeepSeek 账号',
       'menu.agent': 'Agent',
       'menu.model': '模型',
@@ -199,7 +211,7 @@ window.__ModuleLoader__.load({
       'warning.groupLoad': '{name} 加载失败：{message}',
       'error.sessionInUse': '当前会话正在运行或被占用，请稍后切换模型。',
       'error.action': '模型切换失败：{message}',
-      'error.settingsNav': '无法打开 Agent 设置页面。',
+      'error.settingsNav': '请从“设置 → Agent”打开账号管理。',
       'action.reload': '重新加载',
     };
 
@@ -301,10 +313,13 @@ window.__ModuleLoader__.load({
       'login.started': 'Sign-in started. Complete authentication in your browser.',
       'login.callbackHint': 'If the final localhost page does not load, paste its full URL here.',
       'login.waitingBrowser': 'Waiting for browser authorization…',
+      'login.openBrowser': 'Authorize in browser',
       'login.flowFailed': 'Sign-in failed. Start again.',
       'login.flowExpired': 'Sign-in expired. Start again.',
       'login.terminalPh': 'Type input and press Enter to send…',
       'logout.done': 'Signed out of {name}',
+      'logout.partial': 'Local API credentials cleared; agent sign-out failed: {message}',
+      'options.needsSession': 'Send the first message to configure options for this conversation.',
       'provider.account': 'DeepSeek Account',
       'menu.agent': 'Agent',
       'menu.model': 'Model',
@@ -338,7 +353,7 @@ window.__ModuleLoader__.load({
       'warning.groupLoad': '{name} failed to load: {message}',
       'error.sessionInUse': 'This session is currently busy. Try switching models once the turn finishes.',
       'error.action': 'Model operation failed: {message}',
-      'error.settingsNav': 'Could not open Agent settings.',
+      'error.settingsNav': 'Open Settings → Agent to manage accounts.',
       'action.reload': 'Reload',
     };
 
@@ -878,6 +893,25 @@ window.__ModuleLoader__.load({
   font-weight: 500;
   color: var(--dsw-alias-label-secondary);
 }
+.dsh-acp-settings-select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: 8px;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  font: inherit;
+}
+.dsh-acp-settings-select:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 2px;
+}
+.dsh-acp-settings-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
 .dsh-acp-env-list {
   display: flex;
   flex-direction: column;
@@ -1007,489 +1041,11 @@ window.__ModuleLoader__.load({
   padding: 8px 2px;
 }
 
-/* ACP ProviderModelPicker Composer Selector */
-.dsh-acp-ms-root {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  min-width: 0;
-}
-.dsh-acp-ms-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  max-width: 360px;
-  padding: 0 10px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
-  font-weight: 500;
-  cursor: pointer;
-  user-select: none;
-  transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
-}
-.dsh-acp-ms-trigger:hover:not(:disabled),
-.dsh-acp-ms-trigger[aria-expanded="true"] {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-.dsh-acp-ms-trigger:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.dsh-acp-ms-trigger-agent {
-  flex-shrink: 0;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 600;
-  color: #60a5fa;
-  background: rgba(59, 130, 246, 0.14);
-  border: 0.5px solid rgba(59, 130, 246, 0.32);
-}
-.dsh-acp-ms-trigger-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh-acp-ms-trigger-effort {
-  flex-shrink: 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  padding: 0 5px;
-  border-radius: 4px;
-  background: var(--dsw-alias-bg-layer-3, rgba(255, 255, 255, 0.05));
-}
-.dsh-acp-ms-chevron {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  color: var(--dsw-alias-label-tertiary);
-  transition: transform 160ms ease;
-}
-.dsh-acp-ms-chevron-open {
-  transform: rotate(180deg);
-}
-.dsh-acp-ms-initial-label {
-  display: inline-grid;
-}
-.dsh-acp-ms-initial-reserve {
-  grid-area: 1 / 1;
-  visibility: hidden;
-  pointer-events: none;
-  height: 0;
-  overflow: hidden;
-}
-.dsh-acp-ms-initial-caption {
-  grid-area: 1 / 1;
-}
-.dsh-acp-ms-menu {
-  position: fixed;
-  z-index: 1200;
-  width: 620px;
-  max-width: calc(100vw - 24px);
-  height: 380px;
-  max-height: calc(100vh - 24px);
-  padding: 0;
-  display: flex;
-  flex-direction: row;
-  gap: 0;
-  overflow: hidden;
-}
+.dsh-acp-session-options { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-top: 6px; }
+.dsh-acp-session-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--dsw-alias-label-primary); font-size: 14px; line-height: 20px; }
+.dsh-acp-session-option > select { width: auto; max-width: 60%; }
+.dsh-acp-session-option > input { accent-color: var(--dsw-alias-state-business-primary); }
 
-/* Left Agent Rail (replaces horizontal tabs) */
-.dsh-acp-ms-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  width: 46px;
-  flex-shrink: 0;
-  padding: 8px 6px;
-  border-right: 0.5px solid var(--dsw-alias-border-l2);
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-.dsh-acp-ms-rail-btn {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 10px;
-  line-height: 14px;
-  font-weight: 700;
-  letter-spacing: 0.2px;
-  cursor: pointer;
-  transition: background 120ms ease, color 120ms ease, box-shadow 120ms ease;
-}
-.dsh-acp-ms-rail-btn:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-.dsh-acp-ms-rail-btn[data-active="true"] {
-  background: rgba(59, 130, 246, 0.15);
-  box-shadow: inset 0 0 0 0.5px rgba(59, 130, 246, 0.45);
-  color: var(--dsw-alias-label-primary);
-}
-.dsh-acp-ms-rail-btn[data-enabled="false"] {
-  opacity: 0.5;
-}
-.dsh-acp-ms-rail-dot {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--dsw-alias-label-tertiary);
-  opacity: 0.45;
-}
-.dsh-acp-ms-rail-dot[data-enabled="true"] {
-  background: #10b981;
-  opacity: 1;
-}
-
-/* Center Column: Search + Flat Model List */
-.dsh-acp-ms-main {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  flex: 1;
-  min-width: 0;
-  padding: 10px 10px 8px;
-}
-.dsh-acp-ms-groups {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  gap: 1px;
-  padding-right: 2px;
-}
-.dsh-acp-ms-cat {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.dsh-acp-ms-cat[data-disabled="true"] {
-  opacity: 0.72;
-}
-.dsh-acp-ms-cat-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 8px 3px;
-}
-.dsh-acp-ms-cat-left {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  flex: 1;
-}
-.dsh-acp-ms-cat-kind {
-  flex-shrink: 0;
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  line-height: 14px;
-  font-weight: 700;
-  letter-spacing: 0.3px;
-  text-transform: uppercase;
-  color: var(--dsw-alias-label-secondary);
-  background: rgba(255, 255, 255, 0.08);
-}
-.dsh-acp-ms-cat-kind[data-acp="true"] {
-  color: #60a5fa;
-  background: rgba(59, 130, 246, 0.16);
-}
-.dsh-acp-ms-cat-title {
-  font-size: 12.5px;
-  line-height: 17px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh-acp-ms-cat-vendor {
-  font-size: 11px;
-  line-height: 15px;
-  color: var(--dsw-alias-label-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh-acp-ms-cat-right {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.dsh-acp-ms-cat-enable-slot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-}
-.dsh-acp-ms-cat-enable {
-  border: 0.5px solid rgba(59, 130, 246, 0.4);
-  background: rgba(59, 130, 246, 0.14);
-  color: #60a5fa;
-  border-radius: 999px;
-  padding: 1px 8px;
-  font-size: 11px;
-  line-height: 16px;
-  font-weight: 600;
-  cursor: pointer;
-  min-width: 62px;
-  text-align: center;
-}
-.dsh-acp-ms-cat-enable:hover {
-  background: rgba(59, 130, 246, 0.24);
-}
-.dsh-acp-ms-cat-count {
-  font-size: 11px;
-  line-height: 15px;
-  color: var(--dsw-alias-label-tertiary);
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.dsh-acp-ms-option {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 9px;
-  border: none;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-size: 12.5px;
-  line-height: 18px;
-  text-align: left;
-  cursor: pointer;
-}
-.dsh-acp-ms-option:hover,
-.dsh-acp-ms-option:focus-visible,
-.dsh-acp-ms-option[data-active="true"] {
-  outline: none;
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.dsh-acp-ms-option[aria-checked="true"] {
-  background: rgba(59, 130, 246, 0.1);
-}
-.dsh-acp-ms-option:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.dsh-acp-ms-option-copy {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  flex: 1;
-}
-.dsh-acp-ms-option-name {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh-acp-ms-option-sub {
-  font-family: var(--dsw-font-family-mono, monospace);
-  font-size: 10.5px;
-  line-height: 14px;
-  color: var(--dsw-alias-label-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex-shrink: 0;
-  max-width: 140px;
-}
-.dsh-acp-ms-kbd {
-  flex-shrink: 0;
-  font-family: var(--dsw-font-family-mono, monospace);
-  font-size: 10px;
-  line-height: 14px;
-  color: var(--dsw-alias-label-tertiary);
-  padding: 1px 5px;
-  border-radius: 4px;
-  border: 0.5px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-3, rgba(255, 255, 255, 0.04));
-}
-.dsh-acp-ms-check {
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #60a5fa;
-}
-.dsh-acp-ms-divider {
-  height: 0.5px;
-  margin: 2px 4px;
-  background: var(--dsw-alias-border-l2);
-}
-.dsh-acp-ms-search-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-.dsh-acp-ms-search {
-  width: 100%;
-}
-.dsh-acp-ms-search-with-query {
-  padding-right: 26px;
-}
-.dsh-acp-ms-search-clear {
-  position: absolute;
-  right: 8px;
-  top: 50%;
-  transform: translateY(-50%);
-  border: none;
-  background: transparent;
-  padding: 2px;
-  border-radius: 4px;
-  color: var(--dsw-alias-label-tertiary);
-  cursor: pointer;
-  display: inline-flex;
-}
-.dsh-acp-ms-search-clear:hover,
-.dsh-acp-ms-search-clear:focus-visible {
-  outline: none;
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.dsh-acp-ms-empty {
-  padding: 12px 8px;
-  text-align: center;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-/* Right Aside: Current Selection + Effort Options + Manage */
-.dsh-acp-ms-aside {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 178px;
-  flex-shrink: 0;
-  padding: 10px 12px;
-  border-left: 0.5px solid var(--dsw-alias-border-l2);
-  overflow-y: auto;
-}
-.dsh-acp-ms-aside-title {
-  font-size: 11px;
-  line-height: 15px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-tertiary);
-}
-.dsh-acp-ms-aside-model {
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 600;
-  color: var(--dsw-alias-label-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.dsh-acp-ms-aside-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  font-size: 11px;
-  line-height: 15px;
-  color: var(--dsw-alias-label-tertiary);
-}
-.dsh-acp-ms-aside-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.dsh-acp-ms-aside-option {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  width: 100%;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--dsw-alias-label-primary);
-  font-size: 12px;
-  line-height: 17px;
-  text-align: left;
-  cursor: pointer;
-}
-.dsh-acp-ms-aside-option:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.dsh-acp-ms-aside-option[data-active="true"] {
-  background: rgba(59, 130, 246, 0.1);
-}
-.dsh-acp-ms-aside-option:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.dsh-acp-ms-aside-option-check {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #60a5fa;
-}
-.dsh-acp-ms-aside-divider {
-  height: 0.5px;
-  background: var(--dsw-alias-border-l2);
-}
-.dsh-acp-ms-aside-foot {
-  margin-top: auto;
-  padding-top: 8px;
-}
-.dsh-acp-ms-manage-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11.5px;
-  line-height: 16px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.dsh-acp-ms-manage-btn:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: var(--dsw-alias-label-primary);
-}
-@media (max-width: 560px) {
-  .dsh-acp-ms-aside {
-    display: none;
-  }
-}
 `;
 
     const DELEGATION_CSS = `
@@ -1617,6 +1173,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const [loading, setLoading] = useState(true);
       const [busyAction, setBusyAction] = useState('');
       const [banner, setBanner] = useState(null);
+      const [probeAuthAction, setProbeAuthAction] = useState(null);
       const [savedFlash, setSavedFlash] = useState(null);
       const [revealEmail, setRevealEmail] = useState(false);
       const [copiedUrl, setCopiedUrl] = useState(false);
@@ -1789,6 +1346,16 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const testAndSyncAgent = async (agent) => {
         setBusyAction(`test:${agent.id}`);
         setBanner(null);
+        let active = true;
+        let polling = false;
+        const poll = async () => {
+          if (polling || !active) return;
+          polling = true;
+          try { const action = await rpc('agent/auth-action', { id: agent.id }); if (active) setProbeAuthAction(action ? { ...action, agentId: agent.id } : null); }
+          catch { /* The probe result carries errors; this only observes pending consent. */ }
+          finally { polling = false; }
+        };
+        const consentTimer = setInterval(() => { void poll(); }, 1000);
         try {
           const res = await rpc('agent/test', { id: agent.id });
           if (res?.catalog) setCatalog(res.catalog);
@@ -1817,6 +1384,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             text: t('test.failed', { name: agent.name, error: err?.message || String(err) }),
           });
         } finally {
+          active = false;
+          clearInterval(consentTimer);
+          setProbeAuthAction(null);
           setBusyAction('');
         }
       };
@@ -1944,7 +1514,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             clearApiKeys: true,
           });
           setCatalog(next);
-          setBanner({ error: false, text: t('logout.done', { name: selectedAgent.name }) });
+          setBanner(next.logoutWarning
+            ? { error: true, text: t('logout.partial', { message: next.logoutWarning }) }
+            : { error: false, text: t('logout.done', { name: selectedAgent.name }) });
         } catch (err) {
           setBanner({ error: true, text: t('saveFailed', { message: err?.message || String(err) }) });
         } finally {
@@ -1969,11 +1541,6 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
         try {
           const next = await rpc('agent/save', {
             agent: {
-              ...selectedAgent,
-              models: selectedAgent.configuredModels || selectedAgent.models,
-              // Always send the auth method currently selected in the account
-              // card so a runtime/models save cannot revert a method switch.
-              authMethod: activeAuthMethod || selectedAgent.authMethod,
               ...patch,
               id: selectedAgent.id,
             },
@@ -2250,6 +1817,12 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       return h(
         'div',
         { className: 'dsh-acp-settings' },
+        probeAuthAction ? h('div', { className: 'dsh-acp-banner', role: 'status' },
+          h('span', null, probeAuthAction.message || t('login.waitingBrowser')),
+          h(Button, { variant: 'outline', size: 'sm', onClick: async () => {
+            try { await rpc('agent/auth-action/accept', { id: probeAuthAction.agentId, elicitationId: probeAuthAction.elicitationId }); setProbeAuthAction(null); }
+            catch (error) { setBanner({ error: true, text: error.message }); }
+          } }, t('login.openBrowser'))) : null,
         /* Top Page Header */
         h(
           'div',
@@ -3420,1156 +2993,74 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       );
     }
 
-    const MEASURE_STYLE = { visibility: 'hidden', left: 0, top: 0 };
-
-    const FALLBACK_ACP_CATALOG = [
-      {
-        id: 'claude-code',
-        providerId: 'acp:claude-code',
-        name: 'Claude Code',
-        badge: 'Anthropic',
-        enabled: false,
-        models: [
-          { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', defaultEffort: 'medium' },
-          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', defaultEffort: 'high' },
-          { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', defaultEffort: 'low' },
-        ],
-      },
-      {
-        id: 'codex',
-        providerId: 'acp:codex',
-        name: 'OpenAI Codex',
-        badge: 'OpenAI',
-        enabled: false,
-        models: [
-          { id: 'gpt-5.4', name: 'GPT-5.4', defaultEffort: 'medium' },
-          { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', defaultEffort: 'medium' },
-          { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', defaultEffort: 'medium' },
-        ],
-      },
-      {
-        id: 'antigravity',
-        providerId: 'acp:antigravity',
-        name: 'Antigravity',
-        badge: 'Google DeepMind',
-        enabled: false,
-        models: [
-          { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon High', defaultEffort: 'high' },
-          { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon Low', defaultEffort: 'low' },
-          { id: 'gemini-3.1-pro-high', name: 'Gemini 3.1 Pro (High)', defaultEffort: 'high' },
-          { id: 'gemini-3.1-pro-low', name: 'Gemini 3.1 Pro (Low)', defaultEffort: 'low' },
-          { id: 'gemini-3-flash', name: 'Gemini 3 Flash', defaultEffort: 'medium' },
-          { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Antigravity)', defaultEffort: 'medium' },
-          { id: 'claude-opus-4-6-thinking', name: 'Claude Opus 4.6 Thinking (Antigravity)', defaultEffort: 'high' },
-        ],
-      },
-      {
-        id: 'devin',
-        providerId: 'acp:devin',
-        name: 'Devin',
-        badge: 'Cognition',
-        enabled: false,
-        models: [
-          { id: 'SWE-1.6', name: 'Cognition SWE-1.6', defaultEffort: 'high' },
-          { id: 'SWE-1.6-fast', name: 'Cognition SWE-1.6 Fast', defaultEffort: 'medium' },
-          { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Devin)', defaultEffort: 'medium' },
-          { id: 'claude-opus-4-6', name: 'Claude Opus 4.6 (Devin)', defaultEffort: 'high' },
-          { id: 'gpt-5.4', name: 'GPT-5.4 (Devin)', defaultEffort: 'medium' },
-        ],
-      },
-    ];
-
-    const defaultEffortsList = (t) => [
-      { id: 'low', name: t('effort.low') },
-      { id: 'medium', name: t('effort.medium') },
-      { id: 'high', name: t('effort.high') },
-    ];
-
-    /**
-     * ACP Composer Agent + Model + Effort Selector (`ProviderModelPicker`).
-     * Shadows `conversation.input.model` at priority -10.
-     */
-    function railTabLabel(tab) {
-      if (tab.id === 'builtin') return 'DSH';
-      const ascii = String(tab.label || '').replace(/[^A-Za-z0-9]/g, '');
-      if (ascii) return ascii.slice(0, 2).toUpperCase();
-      return String(tab.label || 'AI').slice(0, 2).toUpperCase();
+    function editableModelOptions(model) {
+      return (model?.options || []).filter((option) =>
+        ['boolean', 'select'].includes(option.type)
+        && option.id !== 'model' && option.category !== 'model' && option.role !== 'reasoning'
+        && !['thought_level', 'reasoning_effort'].includes(option.category)
+        && !/effort|thought|thinking|mode|permission|approval|sandbox/i.test(`${option.id} ${option.category || ''}`));
     }
 
-    function AgentModelSelect(props) {
-      const { locked, available, directory, load, select, rpc, openAgentSettings, t } = props;
+    function AgentSessionOptions({ sessionId, directory, rpc, openAgentSettings, t, locked, dismiss, reportFailure }) {
       const state = useSyncExternalStore(
         (fn) => directory.subscribe(fn),
         () => directory.getSnapshot(),
       );
-      const [open, setOpen] = useState(false);
-      const { mounted, state: motionState } = usePresence(open);
-      const [activeTab, setActiveTab] = useState('builtin'); // 'builtin' | 'acp:<id>'
-      const [acpCatalog, setAcpCatalog] = useState(FALLBACK_ACP_CATALOG);
-      const [query, setQuery] = useState('');
-      const [highlightedIndex, setHighlightedIndex] = useState(null);
-      const [selectionFocus, setSelectionFocus] = useState(false);
-      const [enablingAgentId, setEnablingAgentId] = useState(null);
-      const lastActionRef = useRef('load');
-      const [toast, setToast] = useState(null);
-      const toastSeq = useRef(0);
-      // Last failed model selection — drives the toast's 重试 action.
-      const [failedAction, setFailedAction] = useState(null);
-
-      const rootRef = useRef(null);
-      const triggerRef = useRef(null);
-      const searchRef = useRef(null);
-      const menuRef = useRef(null);
-      const groupsRef = useRef(null);
-      const itemRefs = useRef([]);
-      const [menuPos, setMenuPos] = useState(null);
-      const id = useId();
-
-      const refreshAcpCatalog = useCallback(() => {
-        if (typeof rpc !== 'function') return;
-        rpc('catalog')
-          .then((res) => {
-            if (Array.isArray(res?.agents) && res.agents.length > 0) {
-              setAcpCatalog(res.agents);
-            }
-          })
-          .catch(() => {});
-      }, [rpc]);
-
+      const provider = state.current?.provider || '';
+      const modelId = state.current?.model;
+      const agentId = provider.startsWith(ACP_PREFIX) ? provider.slice(ACP_PREFIX.length) : null;
+      const key = `${provider}/${modelId}`;
+      const [config, setConfig] = useState(null);
+      const [saving, setSaving] = useState(false);
+      const failureRef = useRef(reportFailure);
+      failureRef.current = reportFailure;
       useEffect(() => {
-        if (available) {
-          load();
-          refreshAcpCatalog();
+        let active = true;
+        setConfig(null);
+        if (agentId && modelId) {
+          Promise.all([
+            rpc('catalog'),
+            rpc('session/options', { sessionId, agentId, model: modelId }),
+          ]).then(([catalog, result]) => {
+            if (!active) return;
+            const agent = catalog.agents.find((item) => item.id === agentId);
+            const model = (agent?.allModels || agent?.models || []).find((item) => item.id === modelId);
+            setConfig({ key, options: editableModelOptions(model), selections: result.selections || [] });
+          }).catch((error) => { if (active) failureRef.current(error.message); });
         }
-      }, [available, load, refreshAcpCatalog]);
+        return () => { active = false; };
+      }, [sessionId, agentId, modelId, state.groups, rpc]);
 
-      useEffect(() => {
-        if (!open || lastActionRef.current !== 'load') return;
-        const text = [
-          ...(state.error === null || state.error === undefined
-            ? []
-            : [t('error.action', { message: state.error })]),
-          ...(state.failures || []).map((failure) =>
-            t('warning.groupLoad', {
-              name: failure.id === 'deepseek-account' ? t('provider.account') : failure.name,
-              message: failure.message,
-            }),
-          ),
-        ].join('\n');
-        if (text !== '') {
-          toastSeq.current += 1;
-          setToast({ seq: toastSeq.current, text, catalog: true });
-        } else {
-          setToast((current) => (current?.catalog === true ? null : current));
-        }
-      }, [open, state.error, state.failures, t]);
-
-      const accountProviderName = t('provider.account');
-
-      const { categories, filterTabs, allChoices } = useMemo(() => {
-        const stateGroupMap = new Map();
-        const builtinCategories = [];
-
-        for (const group of state?.groups || []) {
-          if (typeof group.id === 'string' && group.id.startsWith(ACP_PREFIX)) {
-            stateGroupMap.set(group.id, group);
-          } else {
-            const displayName = group.id === 'deepseek-account' ? accountProviderName : group.name;
-            builtinCategories.push({
-              id: group.id,
-              tabId: 'builtin',
-              acpAgentId: null,
-              name: displayName,
-              vendor: t('agent.defaultBadge'),
-              isExternal: false,
-              enabled: true,
-              models: (group.models || []).map((m) => ({
-                ...m,
-                reasoning: m.reasoning || {
-                  defaultEffort: 'medium',
-                  efforts: defaultEffortsList(t),
-                },
-              })),
-            });
-          }
-        }
-
-        const acpCategories = [];
-        const seenProviders = new Set();
-
-        for (const agent of acpCatalog || []) {
-          const providerId = agent.providerId || `${ACP_PREFIX}${agent.id}`;
-          seenProviders.add(providerId);
-          // Configuration owns availability; stale directory models must not
-          // bring a disabled agent back into the picker or its search results.
-          if (!agent.enabled) continue;
-          const liveGroup = stateGroupMap.get(providerId);
-          const rawModels =
-            liveGroup && (liveGroup.models || []).length > 0
-              ? liveGroup.models
-              : (agent.models || []).filter((m) => !m.hidden);
-          // liveGroup models come from the host model directory which strips
-          // `favorite` — re-derive it from the agent's persisted
-          // favoriteModels so ★ pinning does not depend on server annotation.
-          const favoriteIds = new Set(
-            Array.isArray(agent.favoriteModels) ? agent.favoriteModels : [],
-          );
-          const mappedModels = rawModels.map((m) => ({
-            id: m.id,
-            name: m.name || m.id,
-            favorite: Boolean(m.favorite) || favoriteIds.has(m.id),
-            reasoning: m.reasoning || {
-              defaultEffort: m.defaultEffort || 'medium',
-              efforts: m.efforts || agent.models?.find((item) => item.id === m.id)?.efforts || [],
-            },
-          }));
-          // ACP runtime pins favorites to the top of the provider list.
-          mappedModels.sort((a, b) =>
-            a.favorite === b.favorite ? 0 : a.favorite ? -1 : 1,
-          );
-
-          acpCategories.push({
-            id: providerId,
-            tabId: providerId,
-            acpAgentId: agent.id,
-            name: agent.name || liveGroup?.name || providerId,
-            vendor: agent.badge || t('agent.externalBadge'),
-            isExternal: true,
-            enabled: true,
-            models: mappedModels,
-          });
-        }
-
-        for (const [providerId, liveGroup] of stateGroupMap.entries()) {
-          if (seenProviders.has(providerId)) continue;
-          acpCategories.push({
-            id: providerId,
-            tabId: providerId,
-            acpAgentId: providerId.slice(ACP_PREFIX.length),
-            name: liveGroup.name || providerId,
-            vendor: t('agent.externalBadge'),
-            isExternal: true,
-            enabled: true,
-            models: (liveGroup.models || []).map((m) => ({
-              ...m,
-              reasoning: m.reasoning || {
-                defaultEffort: 'medium',
-                efforts: defaultEffortsList(t),
-              },
-            })),
-          });
-        }
-
-        const allCats = [...builtinCategories, ...acpCategories];
-        const tabs = [
-          ...(builtinCategories.length > 0
-            ? [{ id: 'builtin', label: t('agent.defaultName'), isExternal: false, enabled: true }]
-            : []),
-          ...acpCategories.map((cat) => ({
-            id: cat.id,
-            label: cat.name,
-            vendor: cat.vendor,
-            isExternal: true,
-            enabled: cat.enabled,
-          })),
-        ];
-
-        const flatChoices = allCats.flatMap((cat) =>
-          (cat.models || []).map((model) => ({
-            category: cat,
-            model,
-            selection: {
-              provider: cat.id,
-              model: model.id,
-              ...(model.reasoning?.defaultEffort === undefined
-                ? {}
-                : { reasoningEffort: model.reasoning.defaultEffort }),
-            },
-          })),
-        );
-
-        return { categories: allCats, filterTabs: tabs, allChoices: flatChoices };
-      }, [state?.groups, acpCatalog, accountProviderName, t]);
-
-      const currentProviderId = state?.current?.provider || '';
-      const currentCategory =
-        categories.find((c) => c.id === currentProviderId)
-        || (currentProviderId.startsWith(ACP_PREFIX)
-          ? {
-              id: currentProviderId,
-              name: currentProviderId.slice(ACP_PREFIX.length),
-              vendor: 'ACP',
-              isExternal: true,
-              enabled: true,
-            }
-          : {
-              id: currentProviderId,
-              name: t('agent.defaultName'),
-              vendor: t('agent.defaultBadge'),
-              isExternal: false,
-              enabled: true,
-            });
-
-      const currentChoice = useMemo(
-        () =>
-          !state?.current
-            ? undefined
-            : allChoices.find(
-                (c) =>
-                  c.selection.provider === state.current?.provider
-                  && c.selection.model === state.current?.model,
-              ),
-        [allChoices, state?.current],
-      );
-
-      const effectiveActiveTab = filterTabs.some((tab) => tab.id === activeTab)
-        ? activeTab
-        : (filterTabs[0]?.id ?? 'builtin');
-
-      const filteredCategories = useMemo(() => {
-        const trimmed = query.trim();
-        return categories
-          .filter((cat) => {
-            if (effectiveActiveTab === 'builtin') return !cat.isExternal;
-            return cat.id === effectiveActiveTab;
-          })
-          .map((cat) => {
-            if (!trimmed) return cat;
-            const catMatch =
-              cat.name.toLowerCase().includes(trimmed.toLowerCase())
-              || (cat.vendor && cat.vendor.toLowerCase().includes(trimmed.toLowerCase()));
-            const matchedModels = catMatch
-              ? cat.models || []
-              : rankByName(cat.models || [], trimmed);
-            return {
-              ...cat,
-              models: matchedModels,
-            };
-          })
-          .filter((cat) => (cat.models || []).length > 0);
-      }, [categories, effectiveActiveTab, query]);
-
-      const visibleModels = useMemo(
-        () =>
-          filteredCategories.flatMap((cat) =>
-            (cat.models || []).map((model) => ({
-              category: cat,
-              provider: cat.id,
-              model: model.id,
-              reasoningEffort: model.reasoning?.defaultEffort,
-            })),
-          ),
-        [filteredCategories],
-      );
-
-      const currentVisibleIndex = visibleModels.findIndex(
-        (m) => m.provider === state?.current?.provider && m.model === state?.current?.model,
-      );
-      const activeModelIndex = Math.min(
-        highlightedIndex ?? Math.max(0, currentVisibleIndex),
-        Math.max(0, visibleModels.length - 1),
-      );
-
-      const reasoning = currentChoice?.model?.reasoning;
-      const effectiveEffort = state?.current?.reasoningEffort ?? reasoning?.defaultEffort;
-      const effortLabel =
-        reasoning === undefined
-          ? state?.retainedEffort
-          : effectiveEffort === undefined
-            ? t('effort.providerDefault')
-            : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort;
-
-      const effortChoices = useMemo(
-        () =>
-          reasoning === undefined
-            ? []
-            : [
-                ...(reasoning.defaultEffort === undefined
-                  ? [{ key: 'provider-default', effort: undefined, label: t('effort.providerDefault') }]
-                  : []),
-                ...reasoning.efforts.map((effort) => ({
-                  key: `effort:${effort.id}`,
-                  effort: effort.id,
-                  label: effort.name,
-                })),
-              ],
-        [reasoning, t],
-      );
-
-      const busy = Boolean(state?.pending !== null && state?.pending !== undefined) || enablingAgentId !== null;
-
-      const reload = () => {
-        lastActionRef.current = 'load';
-        setToast((current) => (current?.catalog === true ? null : current));
-        load();
-        refreshAcpCatalog();
-      };
-
-      useEffect(() => {
-        if (!open) return undefined;
-        const closeOutside = (event) => {
-          if (event.target instanceof Element && event.target.closest('[data-dsh-toast]') !== null) return;
-          if (rootRef.current?.contains(event.target) === true) return;
-          if (menuRef.current?.contains(event.target) === true) return;
-          setOpen(false);
-        };
-        document.addEventListener('mousedown', closeOutside);
-        return () => document.removeEventListener('mousedown', closeOutside);
-      }, [open]);
-
-      useLayoutEffect(() => {
-        if (open && activeModelIndex >= 0) {
-          itemRefs.current[activeModelIndex]?.scrollIntoView?.({ block: 'nearest' });
-        }
-      }, [open, activeModelIndex, visibleModels]);
-
-      useLayoutEffect(() => {
-        if (!available || !mounted) {
-          setMenuPos(null);
-          return undefined;
-        }
-        if (!open) return undefined;
-        const place = () => {
-          const rect = triggerRef.current?.getBoundingClientRect();
-          if (!rect) return;
-          const MARGIN = 12;
-          const lw = menuRef.current?.offsetWidth ?? 0;
-          const lh = menuRef.current?.offsetHeight ?? 0;
-          let x = rect.left;
-          let y = rect.top - 8 - lh;
-          if (lw > 0) x = Math.min(Math.max(x, MARGIN), window.innerWidth - lw - MARGIN);
-          if (lh > 0) y = Math.min(Math.max(y, MARGIN), window.innerHeight - lh - MARGIN);
-          setMenuPos({ left: x, top: y });
-        };
-        place();
-        window.addEventListener('scroll', place, true);
-        window.addEventListener('resize', place);
-        const menu = menuRef.current;
-        const observer = typeof ResizeObserver !== 'undefined' && menu ? new ResizeObserver(place) : null;
-        if (menu) observer?.observe(menu);
-        return () => {
-          observer?.disconnect();
-          window.removeEventListener('scroll', place, true);
-          window.removeEventListener('resize', place);
-        };
-      }, [available, mounted, open, activeTab, state, query, acpCatalog]);
-
-      if (!available) return null;
-
-      const close = (restoreFocus = false) => {
-        setOpen(false);
-        if (restoreFocus) queueMicrotask(() => triggerRef.current?.focus());
-      };
-
-      const closeAfterSelection = () => {
-        setSelectionFocus(true);
-        close(true);
-      };
-
-      const show = () => {
-        setSelectionFocus(false);
-        triggerRef.current?.focus();
-        setQuery('');
-        setHighlightedIndex(null);
-        setActiveTab(
-          filterTabs.some((tab) => tab.id === currentProviderId)
-            ? currentProviderId
-            : (filterTabs[0]?.id ?? 'builtin'),
-        );
-        setOpen(true);
-        reload();
-        queueMicrotask(() => searchRef.current?.focus());
-      };
-
-      const announceFailure = (error) => {
-        toastSeq.current += 1;
-        setToast({
-          seq: toastSeq.current,
-          text:
-            error?.code === 'session/writer-held'
-              ? t('error.sessionInUse')
-              : t('error.action', { message: `${error?.code || 'error'}: ${error?.message || String(error)}` }),
-        });
-      };
-
-      const enableAcpAgent = async (category) => {
-        if (!category?.acpAgentId || typeof rpc !== 'function') return false;
-        setEnablingAgentId(category.acpAgentId);
+      const changeOption = async (option, value) => {
+        setSaving(true);
         try {
-          const res = await rpc('agent/toggle', { id: category.acpAgentId, enabled: true });
-          if (Array.isArray(res?.agents)) {
-            setAcpCatalog(res.agents);
-          } else {
-            refreshAcpCatalog();
-          }
-          await load();
-          return true;
-        } catch (err) {
-          announceFailure(err);
-          return false;
-        } finally {
-          setEnablingAgentId(null);
-        }
+          const result = await rpc('session/options', { sessionId, agentId, model: modelId, option: { id: option.id, value } });
+          setConfig((current) => current?.key === key ? { ...current, selections: result.selections || [] } : current);
+        } catch (error) { reportFailure(error.message); }
+        finally { setSaving(false); }
       };
-
-      const submitSelection = (selection, keepOpen = false, category = null) => {
-        lastActionRef.current = 'select';
-        setFailedAction(null);
-        if (!keepOpen) {
-          setSelectionFocus(true);
-          triggerRef.current?.focus();
-          closeAfterSelection();
-        }
-        void select(selection).then(
-          (result) => {
-            if (!result) return;
-            if (result.ok) {
-              if (!keepOpen && rootRef.current !== null) {
-                closeAfterSelection();
-              }
-              return;
-            }
-            setFailedAction({ selection, category });
-            announceFailure(result.error);
-          },
-          (err) => {
-            setFailedAction({ selection, category });
-            announceFailure(err);
-          },
-        );
-      };
-
-      const retryFailedAction = () => {
-        const failed = failedAction;
-        if (!failed) return;
-        setFailedAction(null);
-        setToast(null);
-        void chooseModel(failed.selection, failed.category);
-      };
-
-      const chooseModel = async (selection, category, keepOpen = false) => {
-        if (category?.isExternal && !category.enabled) {
-          const ok = await enableAcpAgent(category);
-          if (!ok) {
-            setFailedAction({ selection, category });
-            return;
-          }
-        }
-        if (
-          state?.current?.provider === selection.provider
-          && state?.current?.model === selection.model
-        ) {
-          if (!keepOpen) closeAfterSelection();
-          return;
-        }
-        submitSelection(selection, keepOpen, category);
-      };
-
-      const chooseEffort = (effort) => {
-        if (!state?.current) return;
-        if (effectiveEffort === effort) return;
-        submitSelection(
-          {
-            provider: state.current.provider,
-            model: state.current.model,
-            ...(effort === undefined ? {} : { reasoningEffort: effort }),
-          },
-          true,
-        );
-      };
-
-      const onRootKeyDown = (event) => {
-        if (event.nativeEvent?.isComposing) return;
-        if (event.key === 'Escape' && open) {
-          event.preventDefault();
-          close(true);
-          return;
-        }
-        if (!open) return;
-        const railBtn =
-          event.target instanceof Element
-            ? event.target.closest('.dsh-acp-ms-rail-btn')
-            : null;
-        // Provider rail ⇄ list focus: ArrowLeft enters the rail (or cycles to
-        // the previous tab while in it), ArrowRight leaves it for the search
-        // field; Up/Down inside the rail moves between agent tabs.
-        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-          if (railBtn && event.key === 'ArrowRight') {
-            event.preventDefault();
-            searchRef.current?.focus();
-            return;
-          }
-          if (event.key === 'ArrowLeft') {
-            const btns = Array.from(
-              menuRef.current?.querySelectorAll('.dsh-acp-ms-rail-btn') || [],
-            );
-            if (railBtn) {
-              event.preventDefault();
-              const idx = btns.indexOf(railBtn);
-              const prev = btns[(idx - 1 + btns.length) % btns.length];
-              prev?.focus();
-            } else if (btns.length > 0) {
-              event.preventDefault();
-              const active =
-                menuRef.current?.querySelector('.dsh-acp-ms-rail-btn[data-active="true"]')
-                || btns[0];
-              active?.focus();
-            }
-            return;
-          }
-          return;
-        }
-        if (railBtn && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-          event.preventDefault();
-          const btns = Array.from(
-            menuRef.current?.querySelectorAll('.dsh-acp-ms-rail-btn') || [],
-          );
-          const idx = btns.indexOf(railBtn);
-          if (idx >= 0 && btns.length > 0) {
-            const dir = event.key === 'ArrowDown' ? 1 : -1;
-            const next = btns[(idx + dir + btns.length) % btns.length];
-            next?.focus();
-            next?.click();
-          }
-          return;
-        }
-        // ACP runtime Ctrl+Shift+↑/↓ cycles the provider rail without leaving the list.
-        if (
-          (event.ctrlKey || event.metaKey)
-          && event.shiftKey
-          && !event.altKey
-          && (event.key === 'ArrowDown' || event.key === 'ArrowUp')
-        ) {
-          event.preventDefault();
-          if (filterTabs.length > 1) {
-            const idx = Math.max(
-              0,
-              filterTabs.findIndex((tab) => tab.id === effectiveActiveTab),
-            );
-            const dir = event.key === 'ArrowDown' ? 1 : -1;
-            const next = filterTabs[(idx + dir + filterTabs.length) % filterTabs.length];
-            if (next) {
-              setActiveTab(next.id);
-              setHighlightedIndex(0);
-            }
-          }
-          return;
-        }
-        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-          event.preventDefault();
-          if (!busy && visibleModels.length > 0) {
-            const dir = event.key === 'ArrowDown' ? 1 : -1;
-            setHighlightedIndex((activeModelIndex + dir + visibleModels.length) % visibleModels.length);
-          }
-          return;
-        }
-        if (event.key === 'Home' || event.key === 'End') {
-          event.preventDefault();
-          if (!busy && visibleModels.length > 0) {
-            setHighlightedIndex(event.key === 'Home' ? 0 : visibleModels.length - 1);
-          }
-          return;
-        }
-        if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
-          const digit = Number(event.key);
-          if (digit >= 1 && digit <= 9) {
-            const target = visibleModels[digit - 1];
-            if (!busy && target) {
-              event.preventDefault();
-              void chooseModel(
-                {
-                  provider: target.provider,
-                  model: target.model,
-                  ...(target.reasoningEffort === undefined
-                    ? {}
-                    : { reasoningEffort: target.reasoningEffort }),
-                },
-                target.category,
-              );
-            }
-            return;
-          }
-        }
-        if (event.key === 'Enter') {
-          // Enter on a focused rail tab activates that tab via native click.
-          if (railBtn) return;
-          const highlighted = visibleModels[activeModelIndex];
-          if (!busy && highlighted) {
-            event.preventDefault();
-            void chooseModel(
-              {
-                provider: highlighted.provider,
-                model: highlighted.model,
-                ...(highlighted.reasoningEffort === undefined
-                  ? {}
-                  : { reasoningEffort: highlighted.reasoningEffort }),
-              },
-              highlighted.category,
-              // ACP runtime: Shift+Enter selects without closing the picker.
-              event.shiftKey,
-            );
-          }
-          return;
-        }
-        // Printable input with focus anywhere else in the menu routes to the
-        // search field (the keypress itself lands on the now-focused input).
-        if (
-          event.key.length === 1
-          && !event.ctrlKey
-          && !event.metaKey
-          && !event.altKey
-          && searchRef.current
-          && event.target !== searchRef.current
-          && !(
-            event.target instanceof Element
-            && event.target.closest('input, textarea, [contenteditable="true"]')
-          )
-        ) {
-          searchRef.current.focus();
-        }
-      };
-
-      const onRootBlur = (event) => {
-        if (event.relatedTarget instanceof Element && event.relatedTarget.closest('[data-dsh-toast]') !== null) {
-          return;
-        }
-        if (
-          event.relatedTarget
-          && (rootRef.current?.contains(event.relatedTarget) === true
-            || menuRef.current?.contains(event.relatedTarget) === true)
-        ) {
-          return;
-        }
-        close();
-      };
-
-      const waiting = state?.current === null && state?.status === 'loading';
-      const modelLabel = waiting
-        ? t('trigger.loading')
-        : currentChoice?.model?.name
-          ?? (state?.current === null || state?.current === undefined
-            ? t('trigger.fallback')
-            : state.current.model);
-      const isExternalAgent = Boolean(currentCategory?.isExternal);
-      const agentDisplayName = currentCategory?.name || t('agent.defaultName');
-      const triggerTitle = isExternalAgent
-        ? `${agentDisplayName} · ${modelLabel}${effortLabel ? ` · ${effortLabel}` : ''}`
-        : effortLabel
-          ? `${modelLabel} · ${effortLabel}`
-          : modelLabel;
-      const triggerAria = waiting
-        ? t('trigger.loading')
-        : !state?.current
-          ? t('trigger.selectAria')
-          : isExternalAgent
-            ? effortLabel === undefined
-              ? t('trigger.ariaAgent', { agent: agentDisplayName, model: modelLabel })
-              : t('trigger.ariaAgentEffort', {
-                  agent: agentDisplayName,
-                  model: modelLabel,
-                  effort: effortLabel,
-                })
-            : effortLabel === undefined
-              ? t('trigger.aria', { model: modelLabel })
-              : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel });
-
-      let modelRowIdx = 0;
-
-      return h(
-        'div',
-        {
-          ref: rootRef,
-          className: 'dsh-acp-ms-root',
-          onKeyDown: onRootKeyDown,
-          onBlur: onRootBlur,
-          onMouseDown: (event) => {
-            if (event.target instanceof Element && event.target.closest('button') !== null) {
-              event.preventDefault();
-            }
-          },
-        },
-        h(
-          'button',
-          {
-            ref: triggerRef,
-            type: 'button',
-            className: 'dsh-acp-ms-trigger',
-            'aria-label': triggerAria,
-            'aria-haspopup': 'menu',
-            'aria-expanded': open,
-            'aria-controls': open ? `${id}-menu` : undefined,
-            title: triggerTitle,
-            'aria-busy': busy || waiting,
-            'data-selection-focus': selectionFocus ? '' : undefined,
-            onBlur: () => setSelectionFocus(false),
-            disabled: locked,
-            onClick: () => {
-              if (open) close(true);
-              else show();
-            },
-          },
-          isExternalAgent
-            ? h('span', { className: 'dsh-acp-ms-trigger-agent' }, agentDisplayName)
-            : null,
-          !state?.current
-            ? h(
-                'span',
-                { className: 'dsh-acp-ms-trigger-label dsh-acp-ms-initial-label' },
-                h('span', { className: 'dsh-acp-ms-initial-reserve', 'aria-hidden': true }, t('trigger.fallback')),
-                h('span', { className: 'dsh-acp-ms-initial-reserve', 'aria-hidden': true }, t('trigger.loading')),
-                h(FlipText, { className: 'dsh-acp-ms-initial-caption', text: modelLabel }),
-              )
-            : h(FlipText, { className: 'dsh-acp-ms-trigger-label', text: modelLabel }),
-          effortLabel !== undefined
-            ? h(FlipText, { className: 'dsh-acp-ms-trigger-effort', text: effortLabel })
-            : null,
-          busy || waiting
-            ? h(StateDot, { state: 'ongoing', size: 16 })
-            : h(IconChevronDownOutlineRegular, {
-                className: `dsh-acp-ms-chevron${open ? ' dsh-acp-ms-chevron-open' : ''}`,
-              }),
-        ),
-        mounted
-          && createPortal(
-            h(
-              MenuSurface,
-              {
-                ref: menuRef,
-                id: `${id}-menu`,
-                className: 'dsh-acp-ms-menu',
-                style: menuPos ?? MEASURE_STYLE,
-                role: 'dialog',
-                'aria-label': t('menu.aria'),
-                'aria-busy': state?.status === 'loading' || busy,
-                'data-dsh-motion': 'popover',
-                'data-state': motionState,
-                'aria-hidden': open ? undefined : true,
-                ...(open ? {} : { inert: '' }),
-              },
-              /* 1. Left Agent Rail (vertical icon tabs) */
-              h(
-                'div',
-                { className: 'dsh-acp-ms-rail', role: 'tablist', 'aria-label': t('menu.agent') },
-                filterTabs.map((tab) =>
-                  h(
-                    'button',
-                    {
-                      key: tab.id,
-                      type: 'button',
-                      role: 'tab',
-                      'aria-selected': effectiveActiveTab === tab.id,
-                      'aria-label': tab.label,
-                      title: tab.label,
-                      'data-active': effectiveActiveTab === tab.id ? 'true' : undefined,
-                      'data-enabled': tab.enabled === false ? 'false' : undefined,
-                      className: 'dsh-acp-ms-rail-btn',
-                      onClick: () => {
-                        setActiveTab(tab.id);
-                        setHighlightedIndex(0);
-                      },
-                    },
-                    tab.isExternal
-                      ? h('span', {
-                          className: 'dsh-acp-ms-rail-dot',
-                          'data-enabled': tab.enabled ? 'true' : undefined,
-                        })
-                      : null,
-                    h('span', { className: 'dsh-acp-ms-rail-label' }, railTabLabel(tab)),
-                  ),
-                ),
-              ),
-
-              /* 2. Center Column: Search + Flat Model List */
-              h(
-                'div',
-                { className: 'dsh-acp-ms-main' },
-                h(
-                  'div',
-                  { className: 'dsh-acp-ms-search-row' },
-                  h(Input, {
-                    ref: searchRef,
-                    className: `dsh-acp-ms-search${query !== '' ? ' dsh-acp-ms-search-with-query' : ''}`,
-                    type: 'text',
-                    role: 'searchbox',
-                    'aria-label': t('search.placeholder'),
-                    'aria-controls': `${id}-models`,
-                    'aria-activedescendant':
-                      activeModelIndex < 0 ? undefined : `${id}-model-${activeModelIndex}`,
-                    placeholder: t('search.placeholder'),
-                    value: query,
-                    readOnly: busy,
-                    onChange: (e) => {
-                      setQuery(e.target.value);
-                      setHighlightedIndex(0);
-                    },
-                  }),
-                  query !== ''
-                    ? h(
-                        'button',
-                        {
-                          type: 'button',
-                          className: 'dsh-acp-ms-search-clear',
-                          'aria-label': t('search.clear'),
-                          disabled: busy,
-                          onClick: () => {
-                            setQuery('');
-                            setHighlightedIndex(0);
-                            searchRef.current?.focus();
-                          },
-                        },
-                        h(IconCloseFillRegular),
-                      )
-                    : null,
-                ),
-                h(
-                  'div',
-                  {
-                    ref: groupsRef,
-                    id: `${id}-models`,
-                    className: 'dsh-acp-ms-groups scrollable',
-                    role: 'menu',
-                    'aria-label': t('menu.model'),
-                    hidden: filteredCategories.length === 0,
-                  },
-                  filteredCategories.map((cat) =>
-                    h(
-                      'div',
-                      {
-                        key: cat.id,
-                        className: 'dsh-acp-ms-cat',
-                        'data-external': cat.isExternal ? 'true' : undefined,
-                        'data-disabled': !cat.enabled ? 'true' : undefined,
-                      },
-                      h(
-                        'div',
-                        { className: 'dsh-acp-ms-cat-header' },
-                        h(
-                          'div',
-                          { className: 'dsh-acp-ms-cat-left' },
-                          h(
-                            'span',
-                            {
-                              className: 'dsh-acp-ms-cat-kind',
-                              'data-acp': cat.isExternal ? 'true' : undefined,
-                            },
-                            cat.isExternal ? 'ACP' : 'API',
-                          ),
-                          h('span', { className: 'dsh-acp-ms-cat-title' }, cat.name),
-                          cat.vendor
-                            ? h('span', { className: 'dsh-acp-ms-cat-vendor' }, `· ${cat.vendor}`)
-                            : null,
-                        ),
-                        h(
-                          'div',
-                          { className: 'dsh-acp-ms-cat-right' },
-                          cat.isExternal
-                            ? h(
-                                'span',
-                                {
-                                  className: 'dsh-acp-ms-cat-enable-slot',
-                                  style: { visibility: cat.enabled ? 'hidden' : 'visible' },
-                                },
-                                h(
-                                  'button',
-                                  {
-                                    type: 'button',
-                                    className: 'dsh-acp-ms-cat-enable',
-                                    disabled: busy,
-                                    title: t('agent.disabledHint'),
-                                    onClick: (e) => {
-                                      e.stopPropagation();
-                                      void enableAcpAgent(cat);
-                                    },
-                                  },
-                                  enablingAgentId === cat.acpAgentId ? '…' : t('agent.enableBtn'),
-                                ),
-                              )
-                            : null,
-                          h('span', { className: 'dsh-acp-ms-cat-count' }, String((cat.models || []).length)),
-                        ),
-                      ),
-                      (cat.models || []).map((model) => {
-                        const idx = modelRowIdx++;
-                        const selected =
-                          state?.current?.provider === cat.id
-                          && state?.current?.model === model.id;
-                        const selectingThis =
-                          state?.pending?.provider === cat.id
-                          && state?.pending?.model === model.id;
-                        const selection = {
-                          provider: cat.id,
-                          model: model.id,
-                          ...(model.reasoning?.defaultEffort === undefined
-                            ? {}
-                            : {
-                                reasoningEffort:
-                                  selected
-                                    ? state?.current?.reasoningEffort ?? model.reasoning.defaultEffort
-                                    : model.reasoning.defaultEffort,
-                              }),
-                        };
-                        return h(
-                          'button',
-                          {
-                            ref: (node) => {
-                              itemRefs.current[idx] = node;
-                            },
-                            key: `${cat.id}/${model.id}`,
-                            id: `${id}-model-${idx}`,
-                            type: 'button',
-                            role: 'menuitemradio',
-                            'aria-checked': selected,
-                            tabIndex: -1,
-                            'data-active': idx === activeModelIndex ? 'true' : undefined,
-                            disabled: busy,
-                            className: 'dsh-acp-ms-option',
-                            title: !cat.enabled ? `${model.name} (${t('agent.disabledHint')})` : model.name,
-                            onFocus: () => setHighlightedIndex(idx),
-                            onMouseMove:
-                              busy || idx === activeModelIndex
-                                ? undefined
-                                : () => setHighlightedIndex(idx),
-                            onClick: () => void chooseModel(selection, cat),
-                          },
-                          h(
-                            'span',
-                            { className: 'dsh-acp-ms-option-copy' },
-                            h(
-                              'span',
-                              { className: 'dsh-acp-ms-option-name' },
-                              model.favorite ? `★ ${model.name}` : model.name,
-                            ),
-                            model.id !== model.name
-                              ? h('span', { className: 'dsh-acp-ms-option-sub' }, model.id)
-                              : null,
-                          ),
-                          h(
-                            'span',
-                            { className: 'dsh-acp-ms-check', 'aria-hidden': true },
-                            selectingThis
-                              ? h(StateDot, { state: 'ongoing', size: 14 })
-                              : selected
-                                ? h(IconCheckOutlineRegular)
-                                : null,
-                          ),
-                          idx < 9
-                            ? h(
-                                'kbd',
-                                { className: 'dsh-acp-ms-kbd', 'aria-hidden': true },
-                                `Ctrl+${idx + 1}`,
-                              )
-                            : null,
-                        );
-                      }),
-                    ),
-                  ),
-                ),
-                filteredCategories.length === 0
-                  ? h(
-                      'div',
-                      { className: 'dsh-acp-ms-empty', role: 'status' },
-                      t(allChoices.length === 0 ? 'empty.models' : 'search.empty'),
-                    )
-                  : null,
-              ),
-
-              /* 3. Right Aside: Current Selection + Effort List + Manage */
-              h(
-                'div',
-                { className: 'dsh-acp-ms-aside' },
-                h('div', { className: 'dsh-acp-ms-aside-title' }, t('aside.current')),
-                h(
-                  'div',
-                  { className: 'dsh-acp-ms-aside-model', title: triggerTitle },
-                  state?.current ? modelLabel : t('aside.noSelection'),
-                ),
-                h(
-                  'div',
-                  { className: 'dsh-acp-ms-aside-meta' },
-                  h('span', null, `${isExternalAgent ? 'ACP' : 'API'} · ${agentDisplayName}`),
-                  currentCategory?.vendor ? h('span', null, currentCategory.vendor) : null,
-                  isExternalAgent
-                    ? h(
-                        'span',
-                        null,
-                        currentCategory?.enabled ? t('agent.enabledBadge') : t('agent.disabledBadge'),
-                      )
-                    : null,
-                ),
-                effortChoices.length > 0
-                  ? h(
-                      Fragment,
-                      null,
-                      h('div', { className: 'dsh-acp-ms-aside-divider' }),
-                      h('div', { className: 'dsh-acp-ms-aside-title' }, t('menu.effort')),
-                      h(
-                        'div',
-                        { className: 'dsh-acp-ms-aside-list', role: 'group', 'aria-label': t('menu.effort') },
-                        effortChoices.map((choice) => {
-                          const active = effectiveEffort === choice.effort;
-                          return h(
-                            'button',
-                            {
-                              key: choice.key,
-                              type: 'button',
-                              disabled: busy,
-                              'data-active': active ? 'true' : undefined,
-                              className: 'dsh-acp-ms-aside-option',
-                              onClick: () => chooseEffort(choice.effort),
-                            },
-                            h('span', null, choice.label),
-                            h(
-                              'span',
-                              { className: 'dsh-acp-ms-aside-option-check', 'aria-hidden': true },
-                              active ? h(IconCheckOutlineRegular) : null,
-                            ),
-                          );
-                        }),
-                      ),
-                    )
-                  : null,
-                h(
-                  'div',
-                  { className: 'dsh-acp-ms-aside-foot' },
-                  h(
-                    'button',
-                    {
-                      type: 'button',
-                      className: 'dsh-acp-ms-manage-btn',
-                      onClick: () => {
-                        close(false);
-                        if (openAgentSettings?.() === false) {
-                          setFailedAction(null);
-                          toastSeq.current += 1;
-                          setToast({ seq: toastSeq.current, text: t('error.settingsNav') });
-                        }
-                      },
-                    },
-                    h(IconSettingsOutline16, { size: 13 }),
-                    h('span', null, t('menu.manageAgents')),
-                  ),
-                ),
-              ),
-            ),
-            document.body,
-          ),
-        toast
-          && h(Toast, {
-            key: toast.seq,
-            text: toast.text,
-            icon: IconWarningOutlineRegular ? h(IconWarningOutlineRegular) : undefined,
-            holdMs: toast.catalog === true ? null : undefined,
-            dismissLabel: t('modal.close'),
-            actions:
-              toast.catalog === true
-                ? [{ label: t('action.reload'), onClick: reload }]
-                : failedAction
-                  ? [{ label: t('action.retry'), onClick: retryFailedAction }]
-                  : undefined,
-            anchor: rootRef.current?.closest?.('[data-composer-card]') ?? null,
-            onDone: () => setToast(null),
-          }),
-      );
+      return h('div', {
+        className: 'dsh-acp-session-options',
+        onKeyDown: (event) => { if (event.key !== 'Escape') event.stopPropagation(); },
+        // Disabling the focused control during a save emits a null-target
+        // blur. It is an internal transition, not leaving the host's menu.
+        onBlur: (event) => { if (saving && event.relatedTarget === null) event.stopPropagation(); },
+      },
+      config?.key === key ? config.options.map((option) => {
+        const value = config.selections.find((selection) => selection.id === option.id)?.value ?? option.currentValue;
+        const disabled = Boolean(locked || saving || state.pending);
+        return h('label', { key: option.id, className: 'dsh-acp-session-option', title: option.description || '' },
+          h('span', null, option.name || option.label || option.id),
+          option.type === 'boolean'
+            ? h('input', { type: 'checkbox', checked: value === true, disabled, onChange: (event) => void changeOption(option, event.target.checked) })
+            : h('select', { className: 'dsh-acp-settings-select', value: value ?? '', disabled, onChange: (event) => void changeOption(option, event.target.value) },
+                value === undefined ? h('option', { value: '', disabled: true }, t('effort.providerDefault')) : null,
+                (option.options || []).map((choice) => h('option', { key: choice.id, value: choice.id }, choice.name || choice.label || choice.id))));
+      }) : null,
+      h(Button, {
+        size: 'sm', disabled: locked, icon: h(IconSettingsOutline16, { size: 14 }),
+        onClick: () => { dismiss(); if (!openAgentSettings()) reportFailure(t('error.settingsNav')); },
+      }, t('menu.manageAgents')));
     }
 
     // Separate, durable reply content: delegation must remain visible when
@@ -4644,26 +3135,66 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
         h(IconChevronRightOutlineRegular, { size: 12 })));
     }
 
+    function SettingsNavigationBridge({ actions, bind }) {
+      useEffect(() => bind(actions), [actions, bind]);
+      return null;
+    }
+
     function apply(ctx) {
       injectCss();
       ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-acp-agents: dictionaries');
       const t = ctx.locale.bind(NS);
       const connection = ctx.connection ?? ctx.get?.('connection');
-      const settingsNavigation = ctx.settingsNavigation ?? ctx.get?.('settingsNavigation');
 
       const rpc = async (endpoint, input = {}) =>
         rpcValue(await connection.rpc.call('/dsh-acp-agents', endpoint, input));
 
+      let settingsActions;
+      const bindSettingsActions = (actions) => {
+        settingsActions = actions;
+        return () => { if (settingsActions === actions) settingsActions = undefined; };
+      };
       const openAgentSettings = () => {
         try {
-          const nav = ctx.settingsNavigation ?? ctx.get?.('settingsNavigation');
-          if (typeof nav?.open !== 'function') return false;
-          nav.open(SETTINGS_SECTION_ID);
-          return true;
+          const nav = ctx.get('settingsNavigation');
+          if (typeof nav?.open === 'function') {
+            nav.open(SETTINGS_SECTION_ID);
+            return true;
+          }
+          if (typeof settingsActions?.openSection === 'function') {
+            settingsActions.openSection(SETTINGS_SECTION_ID);
+            return true;
+          }
+          return false;
         } catch {
           return false;
         }
       };
+
+      // Standard 0.2.2 owns navigation in the sidebar.settings root store.
+      // Share its declared handle through a root slot so the renderer supplies
+      // the live actions. Never create a second shell instance or claim its children.
+      ctx.slots.inject('settings.section', () => ctx.slots.inject('shell.overlay', () => {
+        let shell;
+        let disposeBridge;
+        const sync = () => {
+          const next = ctx.slots.entriesOfSlot('sidebar.settings')[0];
+          if (shell === next) return;
+          disposeBridge?.();
+          disposeBridge = undefined;
+          settingsActions = undefined;
+          shell = next;
+          if (typeof shell?.store?.spec.actions.openSection !== 'function') return;
+          disposeBridge = ctx.slots.register({
+            name: 'shell.overlay', id: 'dsh-acp-settings-navigation',
+            store: shell.store,
+            inject: () => ({ bind: bindSettingsActions }),
+          }, SettingsNavigationBridge);
+        };
+        const unsubscribe = ctx.slots.subscribe('sidebar.settings', sync);
+        sync();
+        return () => { unsubscribe(); disposeBridge?.(); settingsActions = undefined; };
+      }));
 
       ctx.inject(['uiConversation', 'uiWorkspace'], (scope) => {
         scope.uiConversation.events.register(delegationDefinition);
@@ -4685,50 +3216,42 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             order: 12,
             label: () => t('nav'),
             locale: NS,
-            inject: () => ({ rpc, t, settingsNavigation }),
+            inject: () => ({ rpc, t }),
           },
           AgentsSettingsSection,
         ),
       );
 
-      // 2. Shadow `conversation.input.model` at priority -10 so the composer
-      // model picker shows Agent -> Model -> Effort just like ACP.
-      ctx.inject(['slots', 'modelDirectories', 'sessions', 'remote', 'remote.session'], (scope) => {
+      // Extend the host-owned menu. Re-declaring its children in a replacement
+      // picker violates the standard slot's single-owner lifetime contract.
+      ctx.inject(['slots', 'modelDirectories'], (scope) => {
         const models = scope.modelDirectories;
-        const sessions = scope.sessions;
-        scope.slots.inject('conversation.input.model', () =>
+        scope.slots.inject('conversation.input.model.options', () =>
           scope.slots.register(
             {
-              name: 'conversation.input.model',
-              priority: -10,
+              name: 'conversation.input.model.options',
+              id: 'dsh-acp-options',
+              order: 20,
               locale: NS,
               inject: (sessionId) => {
                 const directory = models.directoryFor(sessionId);
-                const available = sessions.subagentAddress(sessionId) === undefined;
                 return {
-                  available,
+                  sessionId,
                   directory: directory.store,
-                  load: () => {
-                    if (available) {
-                      directory.load().catch(() => {});
-                    }
-                  },
-                  select: (selection) =>
-                    available ? directory.select(selection) : Promise.resolve(undefined),
                   rpc,
                   openAgentSettings,
                   t,
                 };
               },
             },
-            AgentModelSelect,
+            AgentSessionOptions,
           ),
         );
       });
     }
 
     exports.name = NS;
-    exports.inject = ['slots', 'locale', 'connection', 'settingsNavigation', 'remote', 'remote.session'];
+    exports.inject = ['slots', 'locale', 'connection'];
     exports.apply = apply;
     return module.exports;
   },
