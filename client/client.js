@@ -3497,7 +3497,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
     }
 
     function AgentModelSelect(props) {
-      const { locked, available, directory, load, select, rpc, openAgentSettings, t } = props;
+      const { locked, available, directory, load, select, rpc, openAgentSettings, t, renderSlot } = props;
       const state = useSyncExternalStore(
         (fn) => directory.subscribe(fn),
         () => directory.getSnapshot(),
@@ -3986,6 +3986,8 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           return;
         }
         if (!open) return;
+        // Session controls own their keys; Escape above still dismisses the menu.
+        if (event.target instanceof Element && event.target.closest('.dsh-acp-ms-session-options')) return;
         const railBtn =
           event.target instanceof Element
             ? event.target.closest('.dsh-acp-ms-rail-btn')
@@ -4496,6 +4498,19 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                       )
                     : null,
                 ),
+                h('div', { className: 'dsh-acp-ms-session-options' },
+                  renderSlot('conversation.input.model.options', {
+                    locked: locked || busy,
+                    dismiss: () => {
+                      close();
+                      triggerRef.current?.focus();
+                    },
+                    reportFailure: (message) => {
+                      setFailedAction(null);
+                      toastSeq.current += 1;
+                      setToast({ seq: toastSeq.current, text: message });
+                    },
+                  })),
                 effortChoices.length > 0
                   ? h(
                       Fragment,
@@ -4702,6 +4717,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               name: 'conversation.input.model',
               priority: -10,
               locale: NS,
+              children: {
+                'conversation.input.model.options': { kind: 'list', scope: 'session' },
+              },
               inject: (sessionId) => {
                 const directory = models.directoryFor(sessionId);
                 const available = sessions.subagentAddress(sessionId) === undefined;
