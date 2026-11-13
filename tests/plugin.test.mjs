@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import './client-options.test.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -285,6 +286,10 @@ test('configured agents share one discovery/delegation catalog and preserve pare
     assert.equal(calls[0].request.agentOptions.provider, 'acp:reviewer');
     assert.equal(calls[0].request.agentOptions.model, 'review-model');
     assert.equal(calls[0].request.maxDepth, 2);
+      assert.equal(calls[0].parent, parent, 'flattened host API must receive the exact parent');
+      assert.equal(calls[0].prompt, calls[0].request.prompt);
+      assert.equal(calls[0].agentOptions, calls[0].request.agentOptions);
+      assert.equal(calls[0].maxDepth, 2);
     assert.deepEqual(parent.options, { provider: 'native', model: 'main' });
     await assert.rejects(manager.delegate({ agent: 'missing', prompt: 'x' }, parent, signal, 'caller'), /not enabled/);
     await assert.rejects(manager.delegate({ agent: 'reviewer', prompt: '' }, parent, signal, 'caller'), /non-empty/);
