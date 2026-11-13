@@ -3540,7 +3540,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
     }
 
     function AgentModelSelect(props) {
-      const { locked, available, directory, load, select, rpc, openAgentSettings, t, sessionId } = props;
+      const { locked, available, directory, load, select, rpc, openAgentSettings, t, sessionId, renderSlot } = props;
       const state = useSyncExternalStore(
         (fn) => directory.subscribe(fn),
         () => directory.getSnapshot(),
@@ -4054,7 +4054,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
         // Native option controls own their arrows, Space and Enter. The model
         // list shortcuts apply to the search/list, not these form fields.
         if (event.target instanceof Element && event.target !== searchRef.current
-          && event.target.closest('input, select, textarea')) return;
+          && event.target.closest('input, select, textarea, .dsh-acp-ms-session-options')) return;
         const railBtn =
           event.target instanceof Element
             ? event.target.closest('.dsh-acp-ms-rail-btn')
@@ -4613,6 +4613,19 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                           value === undefined ? h('option', { value: '', disabled: true }, t('effort.providerDefault')) : null,
                           (option.options || []).map((choice) => h('option', { key: choice.id, value: choice.id }, choice.name || choice.label || choice.id))));
                 }),
+                h('div', { className: 'dsh-acp-ms-session-options' },
+                  renderSlot('conversation.input.model.options', {
+                    locked: locked || busy,
+                    dismiss: () => {
+                      close();
+                      triggerRef.current?.focus();
+                    },
+                    reportFailure: (message) => {
+                      setFailedAction(null);
+                      toastSeq.current += 1;
+                      setToast({ seq: toastSeq.current, text: message });
+                    },
+                  })),
                 h(
                   'div',
                   { className: 'dsh-acp-ms-aside-foot' },
@@ -4787,6 +4800,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               name: 'conversation.input.model',
               priority: -10,
               locale: NS,
+              children: {
+                'conversation.input.model.options': { kind: 'list', scope: 'session' },
+              },
               inject: (sessionId) => {
                 const directory = models.directoryFor(sessionId);
                 const available = sessions.subagentAddress(sessionId) === undefined;
