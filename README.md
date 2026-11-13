@@ -47,9 +47,20 @@ Delegations appear as compact horizontal entries with an agent icon, task, statu
 
 ## Install and requirements
 
+Standard ACP agents use the same capability-driven path: discover models, dynamic select/boolean options, authentication methods, permissions and forms from the protocol. Adding a Registry agent does not require adding its name or models to plugin code. Provider-specific non-standard extensions retain T3's existing normalizers.
+
+Model changes keep the selected agent model's own reasoning default. The picker only offers reasoning values the agent reports; other discovered model options appear alongside them and are saved per conversation/model. Those options are revalidated against the live session before use. Terminal sign-in uses the host subprocess PTY when available, and an explicit Registry sign-in prepares its distribution first. The optional PTY service is not required for agents that use other authentication methods.
+
+Ordinary sign-in first checks whether the agent can already create a session. Usable native credentials are confirmed without calling `authenticate`, because some agents interpret that call as logging out first. Only an ACP authentication-required response starts interactive sign-in; network and startup failures remain visible errors. **Switch / Re-authenticate** explicitly requests a fresh login. Browser handoffs are shown while waiting, and completion is confirmed by creating a session, not by opening a URL. Cancel and expiry close the owned authentication process. Auth-flow wire ids use protocol-valid slugs while existing credential cache and Antigravity profile paths are retained.
+
+Provider errors and cancellations retain their terminal status. Failed native session restoration reports the original error and retains the saved mapping instead of silently creating a replacement. Native ACP v2 background output resumes through the existing host conversation without issuing a duplicate task prompt. Tool associations are scoped to their owning host conversation.
+
+Antigravity sessions use separate runtime directories and clean up only their own files. A configured executable override may point to the newer `agy` CLI (`agy acp`) or the legacy server; an empty override keeps the existing managed installation. Existing profiles and managed release selection are retained.
+
 - Node.js `^22.19.0 || >=24.0.0`.
 - A DeepSeek Harness host with Cordis 4, LLM adapter registration, connection, and web-server services.
 - Delegation additionally requires the host's `subagents` and `tools` services with managed local child support (`prepareContinuable` / `startActivation`). Without those services, conversation switching remains available.
+- Interactive terminal authentication uses the host's `subprocess.spawnTerminal`. Windows hosts must release the native ConPTY transport after process settlement; updating this plugin does not replace the host's subprocess package.
 
 Install `dsh-acp-agents` through the host's plugin loader. The package declares its server entry, browser client, and composition patch; it does not require changes to the host's source. Produce a distributable archive with `npm pack` and install it through the host's supported local-package flow.
 
@@ -75,7 +86,7 @@ npm ci --prefix tools/runtime-build
 npm run build:runtime
 ```
 
-`tools/runtime-build/upstream/SOURCE.json` records the snapshot revision. Adapted third-party implementation is isolated there; the plugin owns its agent management, conversation routing, host delegation, and UI. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance and license terms.
+`tools/runtime-build/upstream/SOURCE.json` records the base snapshot and selected upstream overlays. The overlays include generic form parsing, reasoning option roles, Registry installation/cache fixes and clearer authentication/startup diagnostics; their Crypto calls are adapted to the pinned Effect dependency. The runtime event projection additionally retains ACP v2 work-state notifications for the host bridge. Adapted third-party implementation is isolated there; the plugin owns its agent management, conversation routing, host delegation, and UI. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for provenance and license terms.
 
 ## Verify changes
 
@@ -83,6 +94,6 @@ Run `npm test` for handoff, discovery, and delegation contracts. Set `DSH_HARNES
 
 ## Current interaction limits
 
-Conversation handoff relays visible text and retained images, not private reasoning or runtime state. Images use stored bytes after ACP image capability negotiation; unsupported agents return an explicit error. Stored files use resource links (the host may already project files into readable saved-path text).
+Conversation handoff relays visible text and retained images, not private reasoning or runtime state. Images use stored bytes after ACP image capability negotiation. When text-only capability is already known, the host explicitly marks the image as omitted; an image reaching an unnegotiated ACP image path is rejected. Stored files use resource links (the host may already project files into readable saved-path text).
 
 After restart, opening the parent reconciles task receipts with child history and the durable parent inbox. Undelivered results are offered once. Interrupted work is reported with a recovery diagnostic; no model task is silently replayed. An explicit follow-up resumes the retained child. Existing pre-receipt task rows retain their log-based display recovery.

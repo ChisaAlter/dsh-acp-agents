@@ -2396,7 +2396,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     initialize: () => initialize,
     authenticate: (methodId) =>
       initialize.pipe(
-        Effect.andThen(
+        Effect.andThen(() =>
           runLoggedRequest("authenticate", { methodId }, acp.agent.authenticate({ methodId })),
         ),
         Effect.asVoid,

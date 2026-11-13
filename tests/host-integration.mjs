@@ -27,6 +27,7 @@ const { installModelSelection } = await load('@deepseek-ai/dsh-agent');
 const { default: Approval } = await import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, 'packages/interaction/user-approval/lib/index.js')).href);
 const { default: Questions } = await import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, 'packages/interaction/user-questions/lib/index.js')).href);
 const { default: SandboxPolicy, setSandboxMode } = await import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, 'packages/sandbox/sandbox-policy/lib/index.js')).href);
+const { default: LocalSubprocess } = await import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, 'packages/subprocess/subprocess-local/lib/index.js')).href);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-host-'));
 process.env.DSH_HOME = root;
 const ctx = new Context();
@@ -40,11 +41,12 @@ await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const fixture = fileURLToPath(new URL('./agent-fixture.cjs', import.meta.url));
 const storeFile = path.join(root, 'acp-agents.json');
-saveAgentsConfig(['alpha', 'beta'].map((id) => ({
+saveAgentsConfig([...['alpha', 'beta'].map((id) => ({
   id, name: id, enabled: true, command: process.execPath, args: [fixture],
   models: [{ id: 'default', name: 'Fixture default' }, ...(id === 'beta' ? [{ id: 'stale-model' }, { id: 'live-model' }] : [])],
   env: { ACP_TEST_LOG: path.join(root, `${id}.jsonl`), ...(id === 'beta' ? { ACP_TEST_NO_IMAGES: '1', ACP_TEST_MODEL_CATALOG: '1', ACP_TEST_STARTUP_CONTROL: path.join(root, 'fail-startup') } : {}) },
-})), storeFile);
+})), { id: 'unknown-v2', name: 'Unknown v2', enabled: true, command: process.execPath, args: [fixture], models: [{ id: 'default' }], env: { ACP_TEST_V2: '1', ACP_TEST_LOG: path.join(root, 'unknown-v2.jsonl') } },
+{ id: 'unknown-terminal', name: 'Unknown terminal', enabled: true, command: process.execPath, args: [fixture], models: [{ id: 'default' }], env: { ACP_TEST_TERMINAL: '1', ACP_TEST_AUTH_MARKER: path.join(root, 'terminal-auth') } }], storeFile);
 const checks = [];
 function pass(label) { checks.push(label); console.log(`PASS ${label}`); }
 async function prompt(agent, text) {
@@ -73,6 +75,7 @@ async function rpc(method, payload = {}) {
 }
 try {
   await mountAgentLoopTestDependencies(ctx, { workingDirectory: true });
+  await ctx.plugin(LocalSubprocess);
   await ctx.plugin(Approval);
   await ctx.plugin(Questions);
   await ctx.plugin(SandboxPolicy);
@@ -92,7 +95,34 @@ try {
   assert.ok(ctx.tools.get('acp_delegate'));
   pass('standalone plugin mounts its model routes, tools and HTTP endpoint');
   const catalog = await rpc('catalog');
-  assert.deepEqual(catalog.agents.filter((agent) => agent.enabled).map((agent) => agent.id), ['alpha', 'beta']);
+  assert.deepEqual(catalog.agents.filter((agent) => agent.enabled).map((agent) => agent.id), ['alpha', 'beta', 'unknown-v2', 'unknown-terminal']);
+  const login = await rpc('agent/login', { id: 'unknown-terminal', methodId: 'fixture-terminal' });
+  const authDeadline = Date.now() + 10000;
+  let auth;
+  do {
+    auth = (await rpc('catalog')).agents.find(agent => agent.id === 'unknown-terminal');
+    if (JSON.stringify(auth).includes('FIXTURE_LOGIN_READY')) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } while (Date.now() < authDeadline);
+  assert.match(JSON.stringify(auth), /FIXTURE_LOGIN_READY/);
+  const answered = await rpc('agent/login/respond', { id: 'unknown-terminal', response: { type: 'terminal', data: 'fixture-accept\r', size: { cols: 100, rows: 30 } } });
+  assert.equal(answered.sent, true);
+  while (!fs.existsSync(path.join(root, 'terminal-auth')) && Date.now() < authDeadline) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.ok(fs.existsSync(path.join(root, 'terminal-auth')));
+  pass('unknown Agent terminal login advertises, renders output, resizes and accepts input through the real host PTY');
+
+  const native = await ctx.agentLoop.create('native-v2-parent', { provider: 'acp:alpha', model: 'default' }, { cwd: root });
+  installModelSelection(native.ctx, { current: { provider: 'acp:unknown-v2', model: 'default' } });
+  await prompt(native, 'Start native background work.');
+  const nativeDeadline = Date.now() + 10000;
+  while (!JSON.stringify(native.session.snapshotEvents()).includes('V2_NATIVE_BACKGROUND_TWO') && Date.now() < nativeDeadline) await new Promise(resolve => setTimeout(resolve, 50));
+  await native.whenIdle();
+  const nativeEvents = JSON.stringify(native.session.snapshotEvents());
+  assert.match(nativeEvents, /V2_FOREGROUND_SETTLED/);
+  assert.match(nativeEvents, /V2_NATIVE_BACKGROUND_ONE/);
+  assert.match(nativeEvents, /V2_NATIVE_BACKGROUND_TWO/);
+  assert.equal(requests('unknown-v2').filter(row => row.method === 'session/prompt').length, 1, 'native output must not cause prompt replay');
+  pass('unknown ACP v2 subprocess delivers two post-settle native cycles to a real host without another prompt');
   const synced = await rpc('agent/test', { id: 'beta', cwd: root });
   assert.equal(synced.ok, true, synced.error);
   assert.equal(synced.modelsFound, 2);
@@ -124,8 +154,11 @@ try {
   const noImageParent = await ctx.agentLoop.create('no-image-parent', { provider: 'acp:beta', model: 'default' }, { cwd: root });
   noImageParent.followup(createUserMessage({ content: [image], source: { kind: 'user' } }));
   await noImageParent.whenIdle();
-  assert.match(JSON.stringify(noImageParent.session.snapshotEvents().findLast(event => event.type === 'turn/end')), /did not negotiate image prompt support/);
-  pass('image bytes reach the ACP subprocess after negotiation; unsupported agents fail explicitly');
+  const textOnlyPrompt = requests('beta').findLast(row => row.method === 'session/prompt').params.prompt;
+  assert.equal(textOnlyPrompt.some(block => block.type === 'image'), false);
+  assert.match(JSON.stringify(textOnlyPrompt), /image omitted because this model accepts text only/);
+  assert.deepEqual((await ctx.llm.listModels('acp:beta')).find(model => model.id === 'default').inputModalities, ['text']);
+  pass('image bytes reach negotiated agents; accurate text-only capability invokes the host explicit image-omission path');
 
   const signal = new AbortController().signal;
   const tool = ctx.tools.get('acp_delegate');
@@ -185,7 +218,7 @@ try {
     return JSON.parse(stdout);
   };
   const discovery = await runBridge('acp_agents', {});
-  assert.equal(discovery.structuredContent.agents.length, 2);
+  assert.deepEqual(discovery.structuredContent.agents.map(agent => agent.id), ['alpha', 'beta', 'unknown-v2', 'unknown-terminal']);
   const settleDelegate = async (task) => {
     const accepted = await runBridge('acp_delegate', { agent: 'beta', prompt: task });
     assert.equal(accepted.structuredContent.status, 'running');

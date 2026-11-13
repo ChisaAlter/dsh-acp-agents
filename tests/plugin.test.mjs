@@ -138,7 +138,9 @@ test('picker excludes disabled agents from tabs and choices, including stale dir
   const start = source.indexOf('const { categories, filterTabs, allChoices } = useMemo(() => {');
   const end = source.indexOf('\n      const currentProviderId', start);
   assert.ok(start >= 0 && end > start);
-  const project = vm.compileFunction(`${source.slice(start, end)}\nreturn { categories, filterTabs, allChoices };`,
+  const reasoningStart = source.indexOf('    function acpModelReasoning(');
+  const reasoningEnd = source.indexOf('\n    /**', reasoningStart);
+  const project = vm.compileFunction(`${source.slice(reasoningStart, reasoningEnd)}\n${source.slice(start, end)}\nreturn { categories, filterTabs, allChoices };`,
     ['state', 'acpCatalog', 'accountProviderName', 't', 'ACP_PREFIX', 'defaultEffortsList', 'useMemo']);
   const agents = [
     { id: 'enabled', name: 'Enabled', enabled: true, models: [{ id: 'ready' }] },
@@ -154,9 +156,52 @@ test('picker excludes disabled agents from tabs and choices, including stale dir
   assert.deepEqual(Array.from(result.allChoices, (choice) => choice.model.id), ['native-model', 'ready']);
   const reenabled = run(agents.map((agent) => ({ ...agent, enabled: true })));
   assert.ok(reenabled.filterTabs.some((tab) => tab.id === 'acp:disabled'));
-  assert.ok(reenabled.allChoices.some((choice) => choice.model.id === 'stale'));
+  assert.ok(reenabled.allChoices.some((choice) => choice.model.id === 'hidden'));
+  assert.ok(!reenabled.allChoices.some((choice) => choice.model.id === 'stale'), 'a stale host cache cannot override the configured model catalog');
   const disabledAll = run(agents.map((agent) => ({ ...agent, enabled: false })));
   assert.deepEqual(Array.from(disabledAll.filterTabs, (tab) => tab.id), ['builtin']);
+});
+
+test('ACP picker submits only advertised reasoning efforts across catalog and directory models', async () => {
+  const source = fs.readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
+  const start = source.indexOf('    function acpModelReasoning(');
+  const end = source.indexOf('\n      const currentProviderId', start);
+  const projectionStart = source.indexOf('const { categories, filterTabs, allChoices } = useMemo(() => {', start);
+  const helperEnd = source.indexOf('\n    /**', start);
+  const project = vm.compileFunction(`${source.slice(start, helperEnd)}\n${source.slice(projectionStart, end)}\nreturn { categories, allChoices };`,
+    ['state', 'acpCatalog', 'accountProviderName', 't', 'ACP_PREFIX', 'defaultEffortsList', 'useMemo']);
+  const efforts = [{ id: 'high', name: 'High' }, { id: 'max', name: 'Maximum' }];
+  const models = [
+    { id: 'gemini-4-carbon-high', defaultEffort: 'medium', efforts: [] },
+    { id: 'adjustable', defaultEffort: 'high', efforts },
+    { id: 'stale-default', defaultEffort: 'medium', efforts },
+  ];
+  const agent = { id: 'antigravity', name: 'Antigravity', enabled: true, models };
+  const groups = [{ id: 'acp:antigravity', models: models.map(({ id }) => ({ id })) },
+    { id: 'acp:orphan', models: [{ id: 'fixed' }] }];
+  for (const stateGroups of [[], groups]) {
+    const { allChoices } = project({ groups: stateGroups }, [agent], 'Account', key => key, 'acp:', () => [], fn => fn());
+    const selections = allChoices.map(choice => choice.selection);
+    assert.deepEqual(selections[0], { provider: 'acp:antigravity', model: 'gemini-4-carbon-high' });
+    assert.equal(selections[1].reasoningEffort, undefined, 'a model change keeps the new agent model default');
+    assert.equal(selections[2].reasoningEffort, undefined);
+    assert.deepEqual(allChoices[1].model.reasoning.efforts.map(effort => effort.id), ['high', 'max']);
+    if (stateGroups.length) assert.deepEqual(selections[3], { provider: 'acp:orphan', model: 'fixed' });
+  }
+  const resolveReasoning = vm.compileFunction(`${source.slice(start, helperEnd)}\nreturn acpModelReasoning(model);`, ['model']);
+  const liveReasoning = { defaultEffort: undefined, efforts };
+  assert.equal(resolveReasoning({ reasoning: liveReasoning }), liveReasoning, 'live provider-default metadata stays authoritative');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-picker-effort-'));
+  const storeFile = path.join(dir, 'agents.json');
+  saveAgentsConfig([agent], storeFile);
+  const manager = createAcpAgentsManager({}, { storeFile });
+  try {
+    const { allChoices } = project({ groups }, [agent], 'Account', key => key, 'acp:', () => [], fn => fn());
+    for (const { selection } of allChoices.filter(choice => choice.selection.provider === 'acp:antigravity')) {
+      const resolved = await manager.adapter.resolveModel(selection.provider, selection.model);
+      assert.equal(selection.reasoningEffort, resolved.reasoning?.defaultEffort);
+    }
+  } finally { await manager.closeAllConnections(); fs.rmSync(dir, { recursive: true }); }
 });
 
 test('agent switching seeds context and returning agents receive missed turns', () => {

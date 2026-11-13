@@ -23,6 +23,9 @@ import { FetchHttpClient } from "effect/http";
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import * as AcpRuntimeModel from "@t3tools/provider-acp/server/runtimeModel";
 import * as AcpSessionConfig from "@t3tools/provider-acp/server/sessionConfig";
+export { parseElicitationForm } from "./upstream/packages/provider-acp/src/server/elicitationForm.ts";
+
+export const modelOptionDescriptors = AcpSessionConfig.acpProviderOptionDescriptors;
 import * as AcpClientPolicy from "@t3tools/provider-acp/server/clientPolicy";
 import * as AcpClientTerminals from "@t3tools/provider-acp/server/clientTerminals";
 import * as AcpStderr from "@t3tools/provider-acp/server/stderr";
@@ -163,8 +166,14 @@ export async function initAgentRuntime(init: AgentRuntimeInit): Promise<void> {
 
 export async function disposeAgentRuntime(): Promise<void> {
   const current = runtime;
-  runtime = undefined;
+  await agyInstallationPromise?.catch(() => {});
+  if (current && agyInstallationService) {
+    await current.runPromise(Scope.close(agyInstallationService.scope, Exit.void));
+    agyInstallationService = undefined;
+  }
   if (current) await current.dispose();
+  agyInstallationPromise = undefined;
+  runtime = undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +220,13 @@ export const catalog = {
 // Session runtime
 // ---------------------------------------------------------------------------
 
+export const registryAuthAction = {
+  get: (instanceId: string) => runCatch(Effect.flatMap(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator, (coordinator) =>
+    coordinator.getUrlAuthAction(instanceId as never).pipe(Effect.map(Option.getOrNull)))),
+  accept: (instanceId: string, elicitationId: string) => runCatch(Effect.flatMap(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator, (coordinator) =>
+    coordinator.acceptUrlAuthentication({ instanceId: instanceId as never, elicitationId }))),
+};
+
 export interface SessionHandle {
   readonly scope: Scope.Closeable;
   readonly service: AcpSessionRuntime.AcpSessionRuntime["Service"];
@@ -228,7 +244,7 @@ export async function createSession(input: CreateSessionInput): Promise<SessionH
     Layer.build(AcpSessionRuntime.layer(input.options)).pipe(
       Effect.provideService(Scope.Scope, scope),
     ),
-  );
+  ).catch(async (error) => { await run(Scope.close(scope, Exit.void)); throw error; });
   const service = Context.get(context, AcpSessionRuntime.AcpSessionRuntime);
   const eventsFiber = rt().runFork(
     Stream.runForEach(service.getEvents(), (event) =>
@@ -353,6 +369,7 @@ export interface CreateAuthInput {
   readonly environment: NodeJS.ProcessEnv;
   readonly onChanged?: (authenticated: boolean) => unknown;
   readonly owner?: string;
+  readonly stopSessions?: () => Promise<void>;
 }
 
 export interface AuthFlowHandle {
@@ -360,6 +377,7 @@ export interface AuthFlowHandle {
   readonly owner: string;
   readonly scope: Scope.Closeable;
   readonly subscriptionFiber: Fiber.RuntimeFiber<void>;
+  readonly stopSessions?: () => Promise<void>;
 }
 
 export async function createAuthFlow(
@@ -369,13 +387,15 @@ export async function createAuthFlow(
   const scope = await run(Scope.make());
   const controller = await runCatch(
     AcpRegistryAuth.makeAcpRegistryAuth({
-      instanceId: input.instanceId as never,
+      // Flow/error wire ids are slugs. Keep persisted auth-state and AGY
+      // profile ids unchanged below so existing credentials retain their paths.
+      instanceId: input.instanceId.replace(/^dsh:/, "dsh-") as never,
       settings: input.settings,
       cwd: input.cwd,
       environment: input.environment,
       onChanged: (authenticated) => asPromiseEffect(() => input.onChanged?.(authenticated)),
     }).pipe(Effect.provideService(Scope.Scope, scope)),
-  );
+  ).catch(async (error) => { await run(Scope.close(scope, Exit.void)); throw error; });
   const owner = input.owner ?? "dsh-webview";
   const subscriptionFiber = rt().runFork(
     Stream.runForEach(controller.subscribe(owner), (state) =>
@@ -388,25 +408,28 @@ export async function createAuthFlow(
       }),
     ),
   );
-  return { controller, owner, scope, subscriptionFiber };
+  return { controller, owner, scope, subscriptionFiber, stopSessions: input.stopSessions };
 }
 
 export function authFlowApi(handle: AuthFlowHandle) {
   const { controller, owner } = handle;
-  const noopStop = Effect.void;
+  const stopSessions = asPromiseEffect(() => handle.stopSessions?.());
   return {
+    credentialBinding: controller.credentialBinding,
     start: (options?: {
       selectedMethodId?: string;
       returnUrl?: string;
       callbackMode?: "server" | "client";
+      forceReauthentication?: boolean;
     }) =>
       runCatch(
         controller.start(
           owner,
-          noopStop,
+          stopSessions,
           options?.selectedMethodId,
           options?.returnUrl,
           options?.callbackMode,
+          options?.forceReauthentication,
         ),
       ),
     respond: (input: { flowId: string; interactionId: string; response: unknown }) =>
@@ -414,12 +437,12 @@ export function authFlowApi(handle: AuthFlowHandle) {
     complete: (input: { flowId: string; callbackUrl: string }) =>
       runCatch(controller.complete(owner, input as never)),
     cancel: (flowId: string) => runCatch(controller.cancel(owner, flowId)),
-    logout: () => runCatch(controller.logout(noopStop)),
+    logout: () => runCatch(controller.logout(stopSessions)),
     refreshMethods: () => runCatch(controller.refreshMethods),
     invalidate: () => runCatch(controller.invalidate),
     isChangingCredentials: () => runCatch(controller.isChangingCredentials),
     adoptCredentials: (update: AnyEffect<void>) =>
-      runCatch(controller.adoptCredentials(update, noopStop)),
+      runCatch(controller.adoptCredentials(update, stopSessions)),
     dispose: async () => {
       await rt().runPromise(Fiber.interrupt(handle.subscriptionFiber));
       await runCatch(Scope.close(handle.scope, Exit.void));
@@ -560,23 +583,29 @@ const antigravityHarnessName =
 let agyInstallationService:
   | { service: AntigravityInstallation.AntigravityInstallationService; scope: Scope.Closeable }
   | undefined;
+let agyInstallationPromise: Promise<AntigravityInstallation.AntigravityInstallationService> | undefined;
 
 async function agyInstallation(baseDir: string) {
+  if (agyInstallationPromise) return agyInstallationPromise;
+  agyInstallationPromise = (async () => {
   if (!agyInstallationService) {
     const scope = await run(Scope.make());
     const service = await runCatch(
       AntigravityInstallation.makeAntigravityInstallation({ baseDir }).pipe(
         Effect.provideService(Scope.Scope, scope),
       ) as AnyEffect<AntigravityInstallation.AntigravityInstallationService>,
-    );
+    ).catch(async (error) => { await run(Scope.close(scope, Exit.void)); throw error; });
     agyInstallationService = { service, scope };
   }
   return agyInstallationService.service;
+  })();
+  try { return await agyInstallationPromise; }
+  catch (error) { agyInstallationPromise = undefined; throw error; }
 }
 
 export interface AntigravityManagedExecutable {
   readonly executablePath: string;
-  readonly harnessPath: string;
+  readonly harnessPath: string | null;
   readonly version: string | null;
   readonly managedVersionDirectory: string | null;
 }
@@ -632,7 +661,7 @@ export async function antigravityAcquire(input: { readonly baseDir: string }): P
     service.acquire(undefined, undefined).pipe(
       Effect.provideService(Scope.Scope, scope),
     ) as AnyEffect<AntigravityManagedExecutable>,
-  );
+  ).catch(async (error) => { await run(Scope.close(scope, Exit.void)); throw error; });
   return {
     executable,
     release: async () => {
@@ -644,7 +673,7 @@ export async function antigravityAcquire(input: { readonly baseDir: string }): P
 const antigravityExecutableFor = (executablePath: string) =>
   ({
     executablePath,
-    harnessPath: NodePath.join(NodePath.dirname(executablePath), antigravityHarnessName),
+    harnessPath: /^agy(?:\.exe)?$/i.test(NodePath.basename(executablePath)) ? null : NodePath.join(NodePath.dirname(executablePath), antigravityHarnessName),
     source: "managed",
     version: null,
     managedVersionDirectory: NodePath.dirname(executablePath),
@@ -704,6 +733,7 @@ export interface AntigravitySessionPlanInput {
   readonly auth: AntigravityAuthConfigInput;
   readonly stateDir: string;
   readonly userHome?: string;
+  readonly executablePath?: string;
 }
 
 export interface AntigravitySessionPlan {
@@ -719,17 +749,17 @@ export async function antigravitySessionPlan(
   input: AntigravitySessionPlanInput,
 ): Promise<AntigravitySessionPlan> {
   // installation.acquire — managed managed runtime (installs on demand).
-  const executable = await antigravityManagedExecutable({
+  const executable = input.executablePath ? antigravityExecutableFor(input.executablePath) : await antigravityManagedExecutable({
     baseDir: input.stateDir,
     installIfMissing: true,
   });
   if (!executable) {
     throw new Error("Antigravity installation did not produce a runtime executable.");
   }
-  const lease = await antigravityAcquire({ baseDir: input.stateDir });
+  const lease = input.executablePath ? { release: async () => {} } : await antigravityAcquire({ baseDir: input.stateDir });
+  let runtimeTempDirectory: string | undefined;
+  try {
   const dirs = await antigravityInstanceDirs(input.stateDir, input.instanceId);
-  // Driver create sweeps the instance runtime temp before each launch set.
-  await runCatch(AntigravitySessionFiles.removeAntigravityRuntimeTempDirs(dirs.runtimeTemp));
   const auth = antigravityAuthConfig(input.auth);
   const profile = await runCatch(
     AntigravityAuthSupport.prepareAntigravityProfile({
@@ -741,11 +771,19 @@ export async function antigravitySessionPlan(
       tempDirectory: dirs.runtimeTemp,
     } as never),
   );
-  const runtimeTempDirectory = await runCatch(
+  runtimeTempDirectory = await runCatch(
     Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
       fileSystem.makeTempDirectory({ directory: profile.tempDirectory, prefix: "run-" }),
     ),
   );
+  const ownedDirectory = runtimeTempDirectory;
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanup = () => cleanupPromise ??= (async () => {
+    try {
+      await runCatch(Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
+        fileSystem.remove(ownedDirectory, { recursive: true, force: true })));
+    } finally { await lease.release(); }
+  })();
   return {
     spawn: AntigravityAuthSupport.buildAntigravityAcpSpawnInput({
       installation: executable as never,
@@ -758,15 +796,14 @@ export async function antigravitySessionPlan(
     profileDirectory: dirs.profile,
     runtimeTempDirectory,
     executable,
-    cleanup: async () => {
-      await runCatch(
-        Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
-          fileSystem.remove(runtimeTempDirectory, { recursive: true, force: true }),
-        ),
-      ).catch(() => {});
-      await lease.release().catch(() => {});
-    },
+    cleanup,
   };
+  } catch (error) {
+    if (runtimeTempDirectory) await runCatch(Effect.flatMap(FileSystem.FileSystem, (fs) =>
+      fs.remove(runtimeTempDirectory!, { recursive: true, force: true }))).catch(() => {});
+    await lease.release();
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -784,6 +821,7 @@ export interface CreateAntigravityAuthInput {
   readonly baseEnv: NodeJS.ProcessEnv;
   readonly userHome?: string;
   readonly onChanged?: (authenticated: boolean) => unknown;
+  readonly stopSessions?: () => Promise<void>;
 }
 
 export interface AntigravityAuthHandle {
@@ -797,6 +835,7 @@ export interface AntigravityAuthHandle {
   readonly owner: string;
   readonly scope: Scope.Closeable;
   readonly subscriptionFiber: Fiber.RuntimeFiber<void>;
+  readonly stopSessions?: () => Promise<void>;
 }
 
 export async function createAntigravityAuth(
@@ -877,7 +916,7 @@ export async function createAntigravityAuth(
     });
   const authFlow = await runCatch(
     AntigravityAuth.makeAntigravityAuth({
-      instanceId: input.instanceId as never,
+      instanceId: input.instanceId.replace(/^dsh:/, "dsh-") as never,
       makeRuntime: makeRuntime as never,
       onAuthenticated: () => asPromiseEffect(() => input.onChanged?.(true)),
       onSignedOut: asPromiseEffect(() => input.onChanged?.(false)),
@@ -887,7 +926,7 @@ export async function createAntigravityAuth(
     }).pipe(Effect.provideService(Scope.Scope, scope)) as AnyEffect<{
       controller: AntigravityAuthHandle["controller"];
     }>,
-  );
+  ).catch(async (error) => { await run(Scope.close(scope, Exit.void)); throw error; });
   const owner = "dsh-webview";
   const subscriptionFiber = rt().runFork(
     Stream.runForEach(authFlow.controller.subscribe(owner), (state) =>
@@ -905,19 +944,20 @@ export async function createAntigravityAuth(
     owner,
     scope,
     subscriptionFiber: subscriptionFiber as Fiber.RuntimeFiber<void>,
+    stopSessions: input.stopSessions,
   };
 }
 
 /** Same surface as authFlowApi; the agy controller has no respond/method probe. */
 export function antigravityAuthApi(handle: AntigravityAuthHandle) {
-  const noopStop = Effect.void;
+  const stopSessions = asPromiseEffect(() => handle.stopSessions?.());
   return {
-    start: () => runCatch(handle.controller.start(handle.owner, noopStop)),
+    start: () => runCatch(handle.controller.start(handle.owner, stopSessions)),
     respond: () => Promise.resolve(false),
     complete: (input: { flowId: string; callbackUrl: string }) =>
       runCatch(handle.controller.complete(handle.owner, input)),
     cancel: (flowId: string) => runCatch(handle.controller.cancel(handle.owner, flowId)),
-    logout: () => runCatch(handle.controller.logout(noopStop)),
+    logout: () => runCatch(handle.controller.logout(stopSessions)),
     refreshMethods: () =>
       Promise.resolve({
         methods: [{ id: "oauth-personal", name: "Log in with Google", type: "browser" }],

@@ -2,13 +2,38 @@
 const readline = require('node:readline');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+if (process.argv.includes('--terminal-login')) {
+  process.stdout.write('FIXTURE_LOGIN_READY\r\n');
+  process.stdin.on('data', data => {
+    if (String(data).includes('fixture-accept')) {
+      fs.writeFileSync(process.env.ACP_TEST_AUTH_MARKER, 'signed-in');
+      process.stdout.write('FIXTURE_LOGIN_COMPLETE\r\n');
+      setTimeout(() => process.exit(0), 100);
+    }
+  });
+  return;
+}
 let pending;
 let permissionPrompt;
+let urlAuthSetup;
+let authenticated = !process.env.ACP_TEST_AUTH_REQUIRED;
 const connections = new Map();
+const modelOptions = [
+  { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'adjustable', options: [{ value: 'adjustable', name: 'Adjustable model' }] },
+  { id: 'budget', name: 'Thinking', category: 'thought_level', type: 'select', currentValue: 'max', options: [{ value: 'high', name: 'High' }, { value: 'max', name: 'Maximum' }] },
+  { id: 'fast', name: 'Fast mode', type: 'boolean', currentValue: true },
+  { id: 'format', name: 'Output format', type: 'select', currentValue: '', options: [{ value: '', name: 'Automatic' }, { value: 'json', name: 'JSON' }] },
+];
 const send = (value) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...value }) + '\n');
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
   const { id, method, params } = message;
+  if (id === 'fixture-url-auth' && urlAuthSetup) {
+    const setup = urlAuthSetup; urlAuthSetup = undefined;
+    if (message.result?.action === 'accept') send({ id: setup.id, result: { sessionId: setup.sessionId } });
+    else send({ id: setup.id, error: { code: -32000, message: 'URL authentication declined' } });
+    return;
+  }
   if (id === 'fixture-permission' && message.result && permissionPrompt) {
     const { requestId, sessionId } = permissionPrompt;
     permissionPrompt = undefined;
@@ -20,23 +45,60 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   if (process.env.ACP_TEST_LOG) fs.appendFileSync(process.env.ACP_TEST_LOG, JSON.stringify({ method, params, pid: process.pid }) + '\n');
-  if (method === 'initialize') send({ id, result: { protocolVersion: 1, authMethods: process.env.ACP_TEST_AUTH ? [{ id: 'fixture-login', name: 'Fixture browser sign-in' }] : [], agentCapabilities: { loadSession: true, promptCapabilities: { image: process.env.ACP_TEST_NO_IMAGES !== '1' } }, agentInfo: { name: 'fixture', version: '1' } } });
-  else if (method === 'authenticate') setTimeout(() => send({ id, result: {} }), 200);
+  if (method === 'initialize' && process.env.ACP_TEST_V2) send({ id, result: { protocolVersion: 2, info: { name: 'unknown-v2-fixture', version: '1' }, capabilities: {} } });
+  else if (method === 'initialize') send({ id, result: { protocolVersion: 1, authMethods: process.env.ACP_TEST_TERMINAL ? [{ type: 'terminal', id: 'fixture-terminal', name: 'Fixture terminal sign-in', args: ['--terminal-login'] }] : process.env.ACP_TEST_AUTH ? [{ id: 'fixture-login', name: 'Fixture browser sign-in' }] : [], agentCapabilities: { loadSession: true, promptCapabilities: { image: process.env.ACP_TEST_NO_IMAGES !== '1' } }, agentInfo: { name: 'fixture', version: '1' } } });
+  else if (method === 'authenticate') {
+    if (process.env.ACP_TEST_AUTH_URL) send({ method: '_codebuddy.ai/authUrl', params: { authUrl: process.env.ACP_TEST_AUTH_URL, provider: 'external' } });
+    if (process.env.ACP_TEST_AUTH_OUTCOME === 'hang') return;
+    setTimeout(() => {
+      if (process.env.ACP_TEST_AUTH_OUTCOME === 'fail') send({ id, error: { code: -32603, message: 'Fixture browser authorization was cancelled' } });
+      else { authenticated = true; send({ id, result: {} }); }
+    }, 200);
+  }
   else if (method === 'session/new' || method === 'session/load') {
+    if (process.env.ACP_TEST_AUTH_REQUIRED && !authenticated) {
+      send({ id, error: { code: -32000, message: 'Authentication required' } }); return;
+    }
+    if (process.env.ACP_TEST_URL_AUTH) {
+      urlAuthSetup = { id, sessionId: crypto.randomUUID() };
+      send({ id: 'fixture-url-auth', method: 'elicitation/create', params: { mode: 'url', requestId: String(id), message: 'Fixture sign-in consent', elicitationId: 'fixture-consent', url: 'https://example.com/fixture-auth' } });
+      return;
+    }
+    if (process.env.ACP_TEST_TERMINAL && !fs.existsSync(process.env.ACP_TEST_AUTH_MARKER)) {
+      send({ id, error: { code: -32000, message: 'Authentication required' } }); return;
+    }
     if (process.env.ACP_TEST_STARTUP_CONTROL && fs.existsSync(process.env.ACP_TEST_STARTUP_CONTROL)) {
-      send({ id, error: { code: -32603, message: 'Internal error', data: { details: 'OAuth token refresh failed: ProxyError connecting to oauth2.googleapis.com/token' } } });
+      send({ id, error: { code: -32603, message: 'Internal error', data: { details: process.env.ACP_TEST_ERROR_DETAILS || 'OAuth token refresh failed: ProxyError connecting to oauth2.googleapis.com/token' } } });
       return;
     }
     const sessionId = params.sessionId || crypto.randomUUID();
     const injected = params.mcpServers?.find(server => server.name === 'whaleisle');
     connections.set(sessionId, Object.fromEntries((injected?.env || []).map(entry => [entry.name, entry.value])));
-    send({ id, result: { sessionId, ...(process.env.ACP_TEST_MODEL_CATALOG ? { configOptions: [{ type: 'select', id: 'model', category: 'model', name: 'Model', currentValue: 'default', options: ['default', 'live-model'].map(value => ({ value, name: value })) }] } : {}) } });
+    send({ id, result: { sessionId, ...(process.env.ACP_TEST_MODEL_OPTIONS ? { configOptions: modelOptions } : process.env.ACP_TEST_MODEL_CATALOG ? { configOptions: [{ type: 'select', id: 'model', category: 'model', name: 'Model', currentValue: 'default', options: ['default', 'live-model'].map(value => ({ value, name: value })) }] } : {}) } });
   }
   else if (method === 'session/set_config_option') {
+    if (process.env.ACP_TEST_MODEL_OPTIONS) {
+      const option = modelOptions.find(option => option.id === params.configId);
+      if (option) option.currentValue = params.value;
+      send({ id, result: { configOptions: modelOptions } }); return;
+    }
     if (params.configId === 'model' && params.value === 'stale-model') send({ id, error: { code: -32602, message: 'Model stale-model is not available for this account. Available: default, live-model.' } });
     else send({ id, result: {} });
   }
   else if (method === 'session/prompt') {
+    if (process.env.ACP_TEST_V2) {
+      const update = value => send({ method: 'session/update', params: { sessionId: params.sessionId, update: value } });
+      const cycle = (text) => {
+        update({ sessionUpdate: 'state_update', state: 'running' });
+        update({ sessionUpdate: 'agent_message_chunk', messageId: crypto.randomUUID(), content: { type: 'text', text } });
+        update({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+      };
+      send({ id, result: {} });
+      setTimeout(() => cycle('V2_FOREGROUND_SETTLED'), 20);
+      setTimeout(() => cycle('V2_NATIVE_BACKGROUND_ONE'), 450);
+      setTimeout(() => cycle('V2_NATIVE_BACKGROUND_TWO'), 900);
+      return;
+    }
     const prompt = params.prompt.filter((block) => !String(block.text || '').includes('Configured-agent tools:')).map((block) => block.text || '').join('\n');
     const finalLine = prompt.split('\n').at(-1);
     if (finalLine.startsWith('MCP_REQUEST:')) {

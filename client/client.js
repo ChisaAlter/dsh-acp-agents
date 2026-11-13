@@ -162,10 +162,13 @@ window.__ModuleLoader__.load({
       'login.started': '已发起登录流程，请在浏览器中完成授权。',
       'login.callbackHint': '若浏览器中的 localhost 页面打不开，把完整链接粘贴到这里。',
       'login.waitingBrowser': '正在等待浏览器授权…',
+      'login.openBrowser': '打开浏览器授权',
       'login.flowFailed': '登录失败，请重新开始。',
       'login.flowExpired': '登录已过期，请重新开始。',
       'login.terminalPh': '输入内容后回车发送到登录终端…',
       'logout.done': '已退出登录：{name}',
+      'logout.partial': '已清除本地 API 凭据；Agent 退出登录失败：{message}',
+      'options.needsSession': '发送首条消息后，可为此会话设置选项。',
       'provider.account': 'DeepSeek 账号',
       'menu.agent': 'Agent',
       'menu.model': '模型',
@@ -301,10 +304,13 @@ window.__ModuleLoader__.load({
       'login.started': 'Sign-in started. Complete authentication in your browser.',
       'login.callbackHint': 'If the final localhost page does not load, paste its full URL here.',
       'login.waitingBrowser': 'Waiting for browser authorization…',
+      'login.openBrowser': 'Authorize in browser',
       'login.flowFailed': 'Sign-in failed. Start again.',
       'login.flowExpired': 'Sign-in expired. Start again.',
       'login.terminalPh': 'Type input and press Enter to send…',
       'logout.done': 'Signed out of {name}',
+      'logout.partial': 'Local API credentials cleared; agent sign-out failed: {message}',
+      'options.needsSession': 'Send the first message to configure options for this conversation.',
       'provider.account': 'DeepSeek Account',
       'menu.agent': 'Agent',
       'menu.model': 'Model',
@@ -1355,6 +1361,8 @@ window.__ModuleLoader__.load({
 }
 .dsh-acp-ms-search {
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
 }
 .dsh-acp-ms-search-with-query {
   padding-right: 26px;
@@ -1395,6 +1403,9 @@ window.__ModuleLoader__.load({
   padding: 10px 12px;
   border-left: 0.5px solid var(--dsw-alias-border-l2);
   overflow-y: auto;
+}
+.dsh-acp-ms-aside > * {
+  flex-shrink: 0;
 }
 .dsh-acp-ms-aside-title {
   font-size: 11px;
@@ -1487,7 +1498,9 @@ window.__ModuleLoader__.load({
 }
 @media (max-width: 560px) {
   .dsh-acp-ms-aside {
-    display: none;
+    width: 140px;
+    box-sizing: border-box;
+    padding: 10px 8px;
   }
 }
 `;
@@ -1617,6 +1630,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const [loading, setLoading] = useState(true);
       const [busyAction, setBusyAction] = useState('');
       const [banner, setBanner] = useState(null);
+      const [probeAuthAction, setProbeAuthAction] = useState(null);
       const [savedFlash, setSavedFlash] = useState(null);
       const [revealEmail, setRevealEmail] = useState(false);
       const [copiedUrl, setCopiedUrl] = useState(false);
@@ -1789,6 +1803,16 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const testAndSyncAgent = async (agent) => {
         setBusyAction(`test:${agent.id}`);
         setBanner(null);
+        let active = true;
+        let polling = false;
+        const poll = async () => {
+          if (polling || !active) return;
+          polling = true;
+          try { const action = await rpc('agent/auth-action', { id: agent.id }); if (active) setProbeAuthAction(action ? { ...action, agentId: agent.id } : null); }
+          catch { /* The probe result carries errors; this only observes pending consent. */ }
+          finally { polling = false; }
+        };
+        const consentTimer = setInterval(() => { void poll(); }, 1000);
         try {
           const res = await rpc('agent/test', { id: agent.id });
           if (res?.catalog) setCatalog(res.catalog);
@@ -1817,6 +1841,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             text: t('test.failed', { name: agent.name, error: err?.message || String(err) }),
           });
         } finally {
+          active = false;
+          clearInterval(consentTimer);
+          setProbeAuthAction(null);
           setBusyAction('');
         }
       };
@@ -1944,7 +1971,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             clearApiKeys: true,
           });
           setCatalog(next);
-          setBanner({ error: false, text: t('logout.done', { name: selectedAgent.name }) });
+          setBanner(next.logoutWarning
+            ? { error: true, text: t('logout.partial', { message: next.logoutWarning }) }
+            : { error: false, text: t('logout.done', { name: selectedAgent.name }) });
         } catch (err) {
           setBanner({ error: true, text: t('saveFailed', { message: err?.message || String(err) }) });
         } finally {
@@ -1969,11 +1998,6 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
         try {
           const next = await rpc('agent/save', {
             agent: {
-              ...selectedAgent,
-              models: selectedAgent.configuredModels || selectedAgent.models,
-              // Always send the auth method currently selected in the account
-              // card so a runtime/models save cannot revert a method switch.
-              authMethod: activeAuthMethod || selectedAgent.authMethod,
               ...patch,
               id: selectedAgent.id,
             },
@@ -2250,6 +2274,12 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       return h(
         'div',
         { className: 'dsh-acp-settings' },
+        probeAuthAction ? h('div', { className: 'dsh-acp-banner', role: 'status' },
+          h('span', null, probeAuthAction.message || t('login.waitingBrowser')),
+          h(Button, { variant: 'outline', size: 'sm', onClick: async () => {
+            try { await rpc('agent/auth-action/accept', { id: probeAuthAction.agentId, elicitationId: probeAuthAction.elicitationId }); setProbeAuthAction(null); }
+            catch (error) { setBanner({ error: true, text: error.message }); }
+          } }, t('login.openBrowser'))) : null,
         /* Top Page Header */
         h(
           'div',
@@ -3485,6 +3515,19 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       { id: 'high', name: t('effort.high') },
     ];
 
+    function acpModelReasoning(model, configuredModel = model) {
+      if (model.reasoning !== undefined) return model.reasoning;
+      // A preset's defaultEffort is not an advertised ACP capability. Models
+      // such as Antigravity's High/Low variants encode effort in the model id.
+      const efforts = model.efforts ?? configuredModel?.efforts;
+      if (!efforts?.length) return undefined;
+      const preferred = model.defaultEffort ?? configuredModel?.defaultEffort;
+      return {
+        defaultEffort: efforts.some((effort) => effort.id === preferred) ? preferred : efforts[0].id,
+        efforts,
+      };
+    }
+
     /**
      * ACP Composer Agent + Model + Effort Selector (`ProviderModelPicker`).
      * Shadows `conversation.input.model` at priority -10.
@@ -3497,7 +3540,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
     }
 
     function AgentModelSelect(props) {
-      const { locked, available, directory, load, select, rpc, openAgentSettings, t } = props;
+      const { locked, available, directory, load, select, rpc, openAgentSettings, t, sessionId } = props;
       const state = useSyncExternalStore(
         (fn) => directory.subscribe(fn),
         () => directory.getSnapshot(),
@@ -3515,6 +3558,8 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const toastSeq = useRef(0);
       // Last failed model selection — drives the toast's 重试 action.
       const [failedAction, setFailedAction] = useState(null);
+      const [optionSelections, setOptionSelections] = useState([]);
+      const [savingOption, setSavingOption] = useState(null);
 
       const rootRef = useRef(null);
       const triggerRef = useRef(null);
@@ -3585,10 +3630,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               enabled: true,
               models: (group.models || []).map((m) => ({
                 ...m,
-                reasoning: m.reasoning || {
-                  defaultEffort: 'medium',
-                  efforts: defaultEffortsList(t),
-                },
+                reasoning: m.reasoning,
               })),
             });
           }
@@ -3604,10 +3646,11 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           // bring a disabled agent back into the picker or its search results.
           if (!agent.enabled) continue;
           const liveGroup = stateGroupMap.get(providerId);
-          const rawModels =
-            liveGroup && (liveGroup.models || []).length > 0
-              ? liveGroup.models
-              : (agent.models || []).filter((m) => !m.hidden);
+          // The plugin catalog owns visibility and current discovered models.
+          // Host directory entries contribute metadata, never resurrect hidden IDs.
+          const hiddenIds = new Set(agent.hiddenModels || []);
+          const rawModels = (agent.models || []).filter((m) => !m.hidden && !hiddenIds.has(m.id))
+            .map((m) => ({ ...(liveGroup?.models || []).find((entry) => entry.id === m.id), ...m }));
           // liveGroup models come from the host model directory which strips
           // `favorite` — re-derive it from the agent's persisted
           // favoriteModels so ★ pinning does not depend on server annotation.
@@ -3618,10 +3661,8 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             id: m.id,
             name: m.name || m.id,
             favorite: Boolean(m.favorite) || favoriteIds.has(m.id),
-            reasoning: m.reasoning || {
-              defaultEffort: m.defaultEffort || 'medium',
-              efforts: m.efforts || agent.models?.find((item) => item.id === m.id)?.efforts || [],
-            },
+            options: m.options || [],
+            reasoning: acpModelReasoning(m, agent.models?.find((item) => item.id === m.id)),
           }));
           // ACP runtime pins favorites to the top of the provider list.
           mappedModels.sort((a, b) =>
@@ -3652,10 +3693,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             enabled: true,
             models: (liveGroup.models || []).map((m) => ({
               ...m,
-              reasoning: m.reasoning || {
-                defaultEffort: 'medium',
-                efforts: defaultEffortsList(t),
-              },
+              reasoning: acpModelReasoning(m),
             })),
           });
         }
@@ -3681,7 +3719,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             selection: {
               provider: cat.id,
               model: model.id,
-              ...(model.reasoning?.defaultEffort === undefined
+              ...(cat.isExternal || model.reasoning?.defaultEffort === undefined
                 ? {}
                 : { reasoningEffort: model.reasoning.defaultEffort }),
             },
@@ -3721,6 +3759,19 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               ),
         [allChoices, state?.current],
       );
+      useEffect(() => {
+        let active = true;
+        setOptionSelections([]);
+        if (sessionId && currentCategory.acpAgentId && state.current?.model) {
+          rpc('session/options', { sessionId, agentId: currentCategory.acpAgentId, model: state.current.model })
+            .then((result) => { if (active) setOptionSelections(result.selections || []); })
+            .catch((error) => { if (active) { toastSeq.current += 1; setToast({ seq: toastSeq.current, text: error.message }); } });
+        }
+        return () => { active = false; };
+      }, [sessionId, currentCategory.acpAgentId, state.current?.model, rpc]);
+      const editableOptions = (currentChoice?.model?.options || []).filter((option) =>
+        option.role !== 'reasoning' && !['thought_level', 'reasoning_effort'].includes(option.category)
+        && !/effort|thought|thinking|mode|permission|approval|sandbox/i.test(`${option.id} ${option.category || ''}`));
 
       const effectiveActiveTab = filterTabs.some((tab) => tab.id === activeTab)
         ? activeTab
@@ -3771,10 +3822,12 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       );
 
       const reasoning = currentChoice?.model?.reasoning;
-      const effectiveEffort = state?.current?.reasoningEffort ?? reasoning?.defaultEffort;
+      const effectiveEffort = reasoning === undefined
+        ? undefined
+        : state?.current?.reasoningEffort ?? reasoning.defaultEffort;
       const effortLabel =
         reasoning === undefined
-          ? state?.retainedEffort
+          ? undefined
           : effectiveEffort === undefined
             ? t('effort.providerDefault')
             : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort;
@@ -3948,6 +4001,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       };
 
       const chooseModel = async (selection, category, keepOpen = false) => {
+        // Session config options may change with the model. Let the new ACP
+        // model keep its own default; effort changes are an explicit action.
+        if (category?.isExternal) selection = { provider: selection.provider, model: selection.model };
         if (category?.isExternal && !category.enabled) {
           const ok = await enableAcpAgent(category);
           if (!ok) {
@@ -3977,6 +4033,15 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           true,
         );
       };
+      const chooseOption = async (option, value) => {
+        if (!sessionId || savingOption) return;
+        setSavingOption(option.id);
+        try {
+          const result = await rpc('session/options', { sessionId, agentId: currentCategory.acpAgentId, model: state.current.model, option: { id: option.id, value } });
+          setOptionSelections(result.selections || []);
+        } catch (error) { announceFailure(error); }
+        finally { setSavingOption(null); }
+      };
 
       const onRootKeyDown = (event) => {
         if (event.nativeEvent?.isComposing) return;
@@ -3986,6 +4051,10 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           return;
         }
         if (!open) return;
+        // Native option controls own their arrows, Space and Enter. The model
+        // list shortcuts apply to the search/list, not these form fields.
+        if (event.target instanceof Element && event.target !== searchRef.current
+          && event.target.closest('input, select, textarea')) return;
         const railBtn =
           event.target instanceof Element
             ? event.target.closest('.dsh-acp-ms-rail-btn')
@@ -4130,6 +4199,10 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       };
 
       const onRootBlur = (event) => {
+        // Native selects and a control disabled during its async save can
+        // temporarily lose focus without leaving the popover. Outside clicks
+        // are handled by closeOutside; Tab still supplies a relatedTarget.
+        if (!event.relatedTarget && menuRef.current?.contains(event.target)) return;
         if (event.relatedTarget instanceof Element && event.relatedTarget.closest('[data-dsh-toast]') !== null) {
           return;
         }
@@ -4528,6 +4601,18 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                       ),
                     )
                   : null,
+                editableOptions.length > 0 && !sessionId
+                  ? h('div', { className: 'dsh-acp-ms-aside-meta' }, t('options.needsSession')) : null,
+                editableOptions.map((option) => {
+                  const value = optionSelections.find((entry) => entry.id === option.id)?.value ?? option.currentValue;
+                  return h('label', { key: option.id, className: 'dsh-acp-ms-aside-list', title: option.description || '' },
+                    h('span', { className: 'dsh-acp-ms-aside-title' }, option.name || option.label || option.id),
+                    option.type === 'boolean'
+                      ? h('input', { type: 'checkbox', checked: value === true, disabled: !sessionId || busy || savingOption !== null, onChange: (event) => void chooseOption(option, event.target.checked) })
+                      : h('select', { value: value ?? '', disabled: !sessionId || busy || savingOption !== null, onChange: (event) => void chooseOption(option, event.target.value), style: { maxWidth: '100%', minWidth: 0, color: 'inherit', background: 'var(--dsw-alias-bg-layer-2)', padding: '6px', font: 'inherit' } },
+                          value === undefined ? h('option', { value: '', disabled: true }, t('effort.providerDefault')) : null,
+                          (option.options || []).map((choice) => h('option', { key: choice.id, value: choice.id }, choice.name || choice.label || choice.id))));
+                }),
                 h(
                   'div',
                   { className: 'dsh-acp-ms-aside-foot' },
@@ -4706,6 +4791,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                 const directory = models.directoryFor(sessionId);
                 const available = sessions.subagentAddress(sessionId) === undefined;
                 return {
+                  sessionId,
                   available,
                   directory: directory.store,
                   load: () => {
