@@ -9,7 +9,7 @@ test('ACP model menu declares and renders native session options with host callb
   const registration = source.slice(source.indexOf("name: 'conversation.input.model',"));
   assert.match(registration, /children:\s*\{\s*'conversation.input.model.options': \{ kind: 'list', scope: 'session' \}/);
   const start = source.indexOf("h('div', { className: 'dsh-acp-ms-session-options' }");
-  const end = source.indexOf("\n                h(\n                  'div',\n                  { className: 'dsh-acp-ms-aside-foot' }", start);
+  const end = source.indexOf('\n                effortChoices.length > 0', start);
   assert.ok(start >= 0 && end > start);
   const render = vm.compileFunction(`return ${source.slice(start, end).trim().replace(/,$/, '')};`,
     ['h', 'renderSlot', 'locked', 'busy', 'close', 'triggerRef', 'setFailedAction', 'toastSeq', 'setToast']);

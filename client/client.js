@@ -4569,6 +4569,19 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                       )
                     : null,
                 ),
+                h('div', { className: 'dsh-acp-ms-session-options' },
+                  renderSlot('conversation.input.model.options', {
+                    locked: locked || busy,
+                    dismiss: () => {
+                      close();
+                      triggerRef.current?.focus();
+                    },
+                    reportFailure: (message) => {
+                      setFailedAction(null);
+                      toastSeq.current += 1;
+                      setToast({ seq: toastSeq.current, text: message });
+                    },
+                  })),
                 effortChoices.length > 0
                   ? h(
                       Fragment,
@@ -4613,19 +4626,6 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                           value === undefined ? h('option', { value: '', disabled: true }, t('effort.providerDefault')) : null,
                           (option.options || []).map((choice) => h('option', { key: choice.id, value: choice.id }, choice.name || choice.label || choice.id))));
                 }),
-                h('div', { className: 'dsh-acp-ms-session-options' },
-                  renderSlot('conversation.input.model.options', {
-                    locked: locked || busy,
-                    dismiss: () => {
-                      close();
-                      triggerRef.current?.focus();
-                    },
-                    reportFailure: (message) => {
-                      setFailedAction(null);
-                      toastSeq.current += 1;
-                      setToast({ seq: toastSeq.current, text: message });
-                    },
-                  })),
                 h(
                   'div',
                   { className: 'dsh-acp-ms-aside-foot' },
