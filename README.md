@@ -60,6 +60,7 @@ Antigravity sessions use separate runtime directories and clean up only their ow
 - Node.js `^22.19.0 || >=24.0.0`.
 - A DeepSeek Harness host with Cordis 4, LLM adapter registration, connection, and web-server services.
 - Delegation additionally requires the host's `subagents` and `tools` services with managed local child support (`prepareContinuable` / `startActivation`). Without those services, conversation switching remains available.
+- Managed delegation supports both the nested activation request in host subagent 0.2.1 and the flattened request in 0.2.2. Parent, prompt, model and depth are identical in both representations; compatibility does not retry task admission.
 - Interactive terminal authentication uses the host's `subprocess.spawnTerminal`. Windows hosts must release the native ConPTY transport after process settlement; updating this plugin does not replace the host's subprocess package.
 
 Install `dsh-acp-agents` through the host's plugin loader. The package declares its server entry, browser client, and composition patch; it does not require changes to the host's source. Produce a distributable archive with `npm pack` and install it through the host's supported local-package flow.
@@ -91,6 +92,8 @@ npm run build:runtime
 ## Verify changes
 
 Run `npm test` for handoff, discovery, and delegation contracts. Set `DSH_HARNESS_ROOT` to a built DeepSeek Harness checkout, then run `npm run test:host` for the real Cordis, AgentLoop, child lifecycle, ACP subprocess, and HTTP/MCP bridge integration. The integration test uses scripted ACP agents rather than a paid model or a user's account, and stores its artifacts in a new temporary directory.
+
+To verify the shipped desktop contract, set `DSH_INSTALLED_HOST_ROOT` to its `resources/vendor/deepseek-harness` directory and run `npm run test:installed-host`. This loads the installed production host libraries, creates isolated sessions, and runs one scripted delegation through admission, execution and result delivery. An explicit real-account check can additionally set `DSH_NATIVE_HOME`, `DSH_TEST_NATIVE_AGENT` and `DSH_TEST_NATIVE_MODEL`; it uses that configured agent's existing native profile for one short model reply, without starting authentication or changing the daily agent/session/task JSON.
 
 ## Current interaction limits
 
