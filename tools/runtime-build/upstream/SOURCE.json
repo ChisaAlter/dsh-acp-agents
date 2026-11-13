@@ -15,6 +15,8 @@
     "adaptation": "Crypto service calls retain the pinned Effect API. SelectProviderOptionDescriptor.role and sessionConfig reasoning role are cherry-picked from this revision."
   }],
   "localPatches": [
+    "provider-acp initial activation owns native restoration once and tries the advertised alternate restoration method without creating a replacement session",
+    "contracts ProviderAuthMethod and registry auth retain normalized envVarNames and link metadata for generic env_var credential forms",
     "provider-acp runtimeModel projects v2 state_update notifications to the host bridge",
     "provider-core ProviderAuthFlow passes an optional forceReauthentication flag from the host to authentication without changing the default for existing callers",
     "provider-acp-registry auth verifies an existing native session before ordinary login; only ACP auth-required permits interactive login; forced reauthentication remains explicit",

@@ -689,6 +689,7 @@ export interface AntigravityDirs {
 export async function antigravityInstanceDirs(
   stateDir: string,
   instanceId: string,
+  profileDirectory?: string,
 ): Promise<AntigravityDirs> {
   const dirs = await runCatch(
     AntigravityAuthSupport.resolveAntigravityInstanceDirectories(
@@ -697,9 +698,9 @@ export async function antigravityInstanceDirs(
     ) as AnyEffect<{ profile: string; runtimeTemp: string }>,
   );
   return {
-    profile: dirs.profile,
+    profile: profileDirectory || dirs.profile,
     runtimeTemp: dirs.runtimeTemp,
-    tokenPath: NodePath.join(dirs.profile, "antigravity-acp", "acp_token.json"),
+    tokenPath: NodePath.join(profileDirectory || dirs.profile, "antigravity-acp", "acp_token.json"),
   };
 }
 
@@ -728,6 +729,7 @@ export function antigravitySessionOptions(input: {
 
 export interface AntigravitySessionPlanInput {
   readonly instanceId: string;
+  readonly profileDirectory?: string;
   readonly cwd: string;
   readonly baseEnv: NodeJS.ProcessEnv;
   readonly auth: AntigravityAuthConfigInput;
@@ -759,7 +761,7 @@ export async function antigravitySessionPlan(
   const lease = input.executablePath ? { release: async () => {} } : await antigravityAcquire({ baseDir: input.stateDir });
   let runtimeTempDirectory: string | undefined;
   try {
-  const dirs = await antigravityInstanceDirs(input.stateDir, input.instanceId);
+  const dirs = await antigravityInstanceDirs(input.stateDir, input.instanceId, input.profileDirectory);
   const auth = antigravityAuthConfig(input.auth);
   const profile = await runCatch(
     AntigravityAuthSupport.prepareAntigravityProfile({
@@ -814,6 +816,7 @@ export async function antigravitySessionPlan(
 
 export interface CreateAntigravityAuthInput {
   readonly instanceId: string;
+  readonly profileDirectory?: string;
   readonly stateDir: string;
   /** Resolves the installed server path (installs on demand) — called lazily at flow start. */
   readonly resolveExecutable: () => Promise<string>;
@@ -844,7 +847,7 @@ export async function createAntigravityAuth(
 ): Promise<AntigravityAuthHandle> {
   const scope = await run(Scope.make());
   const auth = antigravityAuthConfig(input.auth);
-  const dirs = await antigravityInstanceDirs(input.stateDir, input.instanceId);
+  const dirs = await antigravityInstanceDirs(input.stateDir, input.instanceId, input.profileDirectory);
   // AntigravityDriver.makeRuntime lines 186-268 + makeDisposableRuntime 270-313.
   const makeRuntime = (rtInput: {
     readonly onAuthorizationUrl?: (url: string) => AnyEffect<void>;

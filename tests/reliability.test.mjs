@@ -9,8 +9,10 @@ import { createAcpAgentsManager } from '../lib/index.js';
 import { AcpSessionConnection, AcpTurnExecution, modelsFromConfigOptions, probeAcpAgent } from '../lib/acp-session.js';
 import { AgentAuthManager } from '../lib/agent-auth.js';
 import { agentRuntimeIdentity, initAgentRuntime, runtimeBundle, configureRuntimeHost } from '../lib/agent-runtime.js';
-import { normalizeModelList, saveAgentsConfig } from '../lib/presets.js';
+import { buildAgentRuntimeEnv, normalizeModelList, saveAgentsConfig } from '../lib/presets.js';
 import { createTaskStore } from '../lib/tasks.js';
+import { createWhaleIsleMcp } from '../lib/mcp-server.js';
+import { listDirectChildren, approvalPolicyOf } from '../lib/host-contract.js';
 
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'acp-reliability-'));
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -25,16 +27,27 @@ after(async () => {
   fs.rmSync(suiteHome, { recursive: true });
 });
 
-test('native API picker preserves absent reasoning and ACP visibility overrides an old directory', () => {
-  const helper = source.indexOf('    function acpModelReasoning(');
-  const helperEnd = source.indexOf('\n    /**', helper);
-  const start = source.indexOf('const { categories, filterTabs, allChoices } = useMemo(() => {');
-  const end = source.indexOf('\n      const currentProviderId', start);
-  const project = vm.compileFunction(`${source.slice(helper, helperEnd)}\n${source.slice(start, end)}\nreturn allChoices;`,
-    ['state', 'acpCatalog', 'accountProviderName', 't', 'ACP_PREFIX', 'useMemo']);
-  const choices = project({ groups: [{ id: 'api', models: [{ id: 'plain' }] }, { id: 'acp:new-agent', models: [{ id: 'old-hidden' }] }] },
-    [{ id: 'new-agent', enabled: true, hiddenModels: ['old-hidden'], models: [{ id: 'new-visible' }, { id: 'old-hidden' }] }], 'Account', key => key, 'acp:', fn => fn());
-  assert.deepEqual(choices.map(choice => choice.selection), [{ provider: 'api', model: 'plain' }, { provider: 'acp:new-agent', model: 'new-visible' }]);
+test('native API picker remains host-owned and ACP visibility is projected from current config', async () => {
+  assert.doesNotMatch(source, /name: 'conversation.input.model',/);
+  assert.match(source, /name: 'conversation.input.model.options',/);
+  const root = temp(), storeFile = path.join(root, 'agents.json');
+  saveAgentsConfig([{ id: 'new-agent', enabled: true, hiddenModels: ['old-hidden'], models: [{ id: 'new-visible' }, { id: 'old-hidden' }] }], storeFile);
+  const manager = createAcpAgentsManager({}, { storeFile });
+  try {
+    assert.deepEqual((await manager.adapter.listModels('acp:new-agent')).map(model => ({ id: model.id, reasoning: model.reasoning })), [{ id: 'new-visible', reasoning: undefined }]);
+    await manager.handleRpc('agent/save', { id: 'new-agent', hiddenModels: ['new-visible'] });
+    assert.deepEqual((await manager.adapter.listModels('acp:new-agent')).map(model => model.id), ['old-hidden']);
+  } finally { await manager.dispose(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('approval policies retain override, default and never semantics on both shipped host APIs', () => {
+  const session = {};
+  assert.equal(approvalPolicyOf({ policyOf: value => { assert.equal(value, session); return 'never'; } }, session), 'never');
+  assert.equal(approvalPolicyOf({ overrideOf: () => 'never', config: { policy: 'ask' } }, session), 'never');
+  assert.equal(approvalPolicyOf({ overrideOf: () => 'ask', config: { policy: 'never' } }, session), 'ask');
+  assert.equal(approvalPolicyOf({ overrideOf: () => undefined, config: { policy: 'never' } }, session), 'never');
+  assert.equal(approvalPolicyOf({ overrideOf: () => undefined, config: {} }, session), 'ask');
+  assert.equal(approvalPolicyOf(undefined, session), 'never');
 });
 
 test('provider terminal error, cancellation and token limit keep their distinct meanings', async () => {
@@ -94,10 +107,105 @@ test('termination and repeated close share one awaited resource finalizer', asyn
 });
 
 test('failed load and resume preserve the original native mapping and useful errors', async () => {
-  const conn = new AcpSessionConnection({ agentConfig: {}, resumeSessionId: 'saved-native' });
-  conn.api = { resumeSession: async () => { throw new Error('temporary network failure'); } };
-  await assert.rejects(conn._resumeFallback(new Error('permission denied')), /saved-native.*permission denied.*temporary network failure/);
-  assert.equal(conn.resumeSessionId, 'saved-native');
+  const root = temp(), release = configureRuntimeHost({});
+  try {
+    for (const mode of ['load', 'fallback', 'failed']) {
+      const log = path.join(root, `${mode}.jsonl`);
+      const conn = new AcpSessionConnection({ cwd: root, resumeSessionId: 'saved-native',
+        agentConfig: { id: `restore-${mode}`, name: 'Restore', command: process.execPath,
+          args: [fileURLToPath(new URL('./agent-fixture.cjs', import.meta.url))], env: { ACP_TEST_LOG: log,
+            ACP_TEST_RESUME: '1', ...(mode !== 'load' ? { ACP_TEST_LOAD_FAIL: '1' } : {}), ...(mode === 'failed' ? { ACP_TEST_RESUME_FAIL: '1' } : {}) } } });
+      try {
+        if (mode === 'failed') await assert.rejects(conn.ensureReady(), /saved-native.*load unavailable.*resume temporarily unavailable.*retained/);
+        else { await conn.ensureReady(); assert.equal(conn.acpSessionId, 'saved-native'); }
+        const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).map(row => row.method).filter(method => method.startsWith('session/'));
+        assert.deepEqual(calls, mode === 'load' ? ['session/load'] : ['session/load', 'session/resume']);
+        assert.equal(conn.resumeSessionId, 'saved-native');
+      } finally { await conn.close(); }
+    }
+  } finally { await release(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('reasoning uses the same empty-value codec and live current values as other options', async () => {
+  let options = [
+    { id: 'model', type: 'select', category: 'model', currentValue: 'm', options: [{ value: 'm', name: 'M' }, { value: 'n', name: 'N' }] },
+    { id: 'budget', type: 'select', category: 'thought_level', currentValue: '', options: [{ value: '', name: 'Automatic' }, { value: 'high', name: 'High' }, { value: 'low', name: 'Low' }] },
+  ];
+  const writes = [], conn = new AcpSessionConnection({ agentConfig: { name: 'Unknown' } });
+  conn.ensureReady = async () => {};
+  conn.api = { getConfigOptions: async () => options, setConfigOption: async (id, value) => { writes.push([id, value]); options.find(option => option.id === id).currentValue = value; } };
+  await conn.syncModelAndEffort('m', 'high', undefined, true);
+  await conn.syncModelAndEffort('m', '_t3/empty', undefined, true);
+  assert.deepEqual(writes, [['budget', 'high'], ['budget', '']]);
+  assert.equal(modelsFromConfigOptions(options)[0].defaultEffort, '_t3/empty');
+  options = options.map(option => ({ ...option, currentValue: option.id === 'model' ? 'n' : 'low' }));
+  conn._onRuntimeEvent({ _tag: 'ConfigOptionsUpdated', configOptions: options });
+  await conn.syncModelAndEffort('m', 'high', undefined, true);
+  assert.deepEqual(writes.slice(-2), [['model', 'm'], ['budget', 'high']]);
+  assert.equal(conn.currentModel, 'm'); assert.equal(conn.currentEffort, 'high');
+});
+
+test('host child listing preserves direct ownership on both shipped interfaces and reports diagnostics', async () => {
+  const old = { listChildren: async id => [{ id: 'direct', parentId: id }] };
+  assert.equal((await listDirectChildren(old, 'parent'))[0].id, 'direct');
+  const current = { listDescendants: async () => [
+    { id: 'direct', kind: 'child', parentId: 'parent', depth: 1 },
+    { id: 'grandchild', kind: 'child', parentId: 'direct', depth: 2 },
+  ] };
+  assert.deepEqual((await listDirectChildren(current, 'parent')).map(row => row.id), ['direct']);
+  await assert.rejects(listDirectChildren({ listDescendants: async () => [{ id: 'broken', kind: 'diagnostic', parentId: 'parent', depth: 1, reason: 'corrupt' }] }, 'parent'), /broken.*corrupt/);
+});
+
+test('MCP accepts the fixed current execution route and refuses the previous provider after a switch', async () => {
+  const agent = { id: 'parent', options: { provider: 'acp:alpha' }, session: { id: 'parent', requestHeader: () => ({ config: { provider: 'acp:beta' } }) } };
+  const mcp = createWhaleIsleMcp({ ctx: { agents: new Map([[agent.id, agent]]) }, listAgents: () => [{ id: 'configured' }] });
+  const message = { id: 1, method: 'tools/call', params: { name: 'acp_agents' } };
+  const current = await mcp.dispatch(message, { dshSession: agent.session, providerId: 'acp:beta' });
+  assert.equal(current.body.result.structuredContent.agents[0].id, 'configured');
+  const stale = await mcp.dispatch(message, { dshSession: agent.session, providerId: 'acp:alpha' });
+  assert.equal(stale.body.result.isError, true);
+});
+
+test('failure detail lookup cannot prevent durable task settlement and delivery', async () => {
+  const root = temp(), events = [], notices = [];
+  const parent = { id: 'parent', status: 'idle', session: { snapshotEvents: () => events, append: (type, data) => events.push({ type, data }) }, followup: message => notices.push(message) };
+  const ctx = { get: name => ctx[name], agents: new Map(), logger: { warn() {} }, sessionQuery: { observeSession: async () => { throw new Error('temporary read failure'); } } };
+  try {
+    const storeFile = path.join(root, 'agents.json'), store = createTaskStore(ctx, storeFile);
+    const task = store.begin(parent, { childId: 'child', agentName: 'Unknown', delivery: 'caller' });
+    await store.attach(parent, task, { childId: 'child', result: Promise.resolve({ stopReason: 'error', output: [] }) }).result;
+    assert.equal(task.status, 'failed'); assert.ok(task.endedAt); assert.equal(notices.length, 1);
+    assert.match(task.diagnostic, /temporary read failure/);
+    const restored = createTaskStore(ctx, storeFile).get(parent.id, task.taskId);
+    assert.equal(restored.status, 'failed'); assert.equal(restored.deliveryState, 'delivered');
+  } finally { fs.rmSync(root, { recursive: true }); }
+});
+
+test('unknown v2 API-key methods retain protocol fields through auth flow and catalog projection', async () => {
+  const root = temp(), release = configureRuntimeHost({}), manager = new AgentAuthManager({});
+  const agent = { id: 'generic-key-agent', baseAgentId: 'custom', name: 'Generic', enabled: true, command: process.execPath,
+    args: [fileURLToPath(new URL('./agent-fixture.cjs', import.meta.url))], env: { ACP_TEST_API_METHOD: '1' }, registrySource: 'local' };
+  try {
+    const entry = await manager._entry(agent); await entry.api.refreshMethods();
+    const status = await manager.getAgentAccountStatus(agent, { forceRefresh: true });
+    assert.deepEqual(status.availableMethods[0].fields, [{ key: 'GENERIC_SERVICE_TOKEN', label: 'GENERIC_SERVICE_TOKEN', secret: true }]);
+    assert.equal(entry.lastState.methods[0].link, 'https://example.com/keys');
+  } finally { await manager.dispose(); await release(); fs.rmSync(root, { recursive: true }); }
+});
+
+test('CLI synchronization consumes normalized registry descriptors without treating them as raw ACP choices', async () => {
+  const root = temp(), storeFile = path.join(root, 'agents.json');
+  saveAgentsConfig([{ id: 'option-probe', baseAgentId: 'custom', name: 'Options', registrySource: 'local', enabled: true,
+    command: process.execPath, args: [fileURLToPath(new URL('./agent-fixture.cjs', import.meta.url))], env: { ACP_TEST_MODEL_OPTIONS: '1' } }], storeFile);
+  const manager = createAcpAgentsManager({}, { storeFile });
+  try {
+    const result = await manager.handleRpc('agent/test', { id: 'option-probe' });
+    assert.equal(result.ok, true, result.error);
+    const model = result.catalog.agents.find(agent => agent.id === 'option-probe').models.find(model => model.id === 'adjustable');
+    assert.equal(model.defaultEffort, 'max');
+    assert.ok(model.options.some(option => option.id === 'format' && option.options.some(choice => choice.id === '_t3/empty')));
+    assert.ok(model.options.some(option => option.id === 'fast' && option.type === 'boolean'));
+  } finally { await manager.dispose(); fs.rmSync(root, { recursive: true }); }
 });
 
 test('dynamic select, boolean, empty values and nonstandard reasoning IDs survive discovery and application', async () => {
@@ -250,8 +358,12 @@ test('Antigravity plans preserve a parallel session directory and release only t
   process.env.DSH_HOME = root;
   try {
     await initAgentRuntime();
-    const input = { stateDir: root, instanceId: 'dsh:test-plans', cwd: root, userHome: root, baseEnv: { ...process.env }, auth: { authMethod: 'oauth-personal' }, executablePath: path.join(root, 'agy_acp_server.exe') };
+    const requestedProfile = path.join(root, 'requested-profile');
+    const input = { stateDir: root, instanceId: 'dsh:test-plans', profileDirectory: requestedProfile, cwd: root, userHome: root, baseEnv: { ...process.env }, auth: { authMethod: 'oauth-personal' }, executablePath: path.join(root, 'agy_acp_server.exe') };
     const first = await runtimeBundle().antigravitySessionPlan(input);
+    assert.equal(first.profileDirectory, requestedProfile);
+    assert.equal(first.spawn.env.GEMINI_HOME, requestedProfile);
+    assert.equal((await runtimeBundle().antigravityInstanceDirs(root, input.instanceId, requestedProfile)).tokenPath, path.join(requestedProfile, 'antigravity-acp', 'acp_token.json'));
     fs.writeFileSync(path.join(first.runtimeTempDirectory, 'still-owned'), 'first');
     const second = await runtimeBundle().antigravitySessionPlan(input);
     assert.ok(fs.existsSync(path.join(first.runtimeTempDirectory, 'still-owned')));
@@ -259,4 +371,14 @@ test('Antigravity plans preserve a parallel session directory and release only t
     await second.cleanup(); assert.ok(fs.existsSync(first.runtimeTempDirectory));
     await Promise.all([first.cleanup(), first.cleanup()]); assert.equal(fs.existsSync(first.runtimeTempDirectory), false);
   } finally { await release(); if (previous === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previous; fs.rmSync(root, { recursive: true }); }
+});
+
+test('an explicit profile is authoritative over inherited or conflicting home variables', () => {
+  const root = temp(), inherited = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = path.join(root, 'inherited');
+  try {
+    const requested = path.join(root, 'chosen');
+    assert.equal(buildAgentRuntimeEnv({ baseAgentId: 'codex', profileDir: requested, env: { CODEX_HOME: 'conflicting' } }).CODEX_HOME, requested);
+    assert.equal(buildAgentRuntimeEnv({ baseAgentId: 'claude-code', profileDir: requested }).CLAUDE_CONFIG_DIR, requested);
+  } finally { if (inherited === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = inherited; fs.rmSync(root, { recursive: true }); }
 });

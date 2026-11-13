@@ -2,52 +2,50 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-
 const source = fs.readFileSync(new URL('../client/client.js', import.meta.url), 'utf8');
-
-test('ACP model menu declares and renders native session options with host callbacks', () => {
-  const registration = source.slice(source.indexOf("name: 'conversation.input.model',"));
-  assert.match(registration, /children:\s*\{\s*'conversation.input.model.options': \{ kind: 'list', scope: 'session' \}/);
-  const start = source.indexOf("h('div', { className: 'dsh-acp-ms-session-options' }");
-  const end = source.indexOf('\n                effortChoices.length > 0', start);
-  assert.ok(start >= 0 && end > start);
-  const render = vm.compileFunction(`return ${source.slice(start, end).trim().replace(/,$/, '')};`,
-    ['h', 'renderSlot', 'locked', 'busy', 'close', 'triggerRef', 'setFailedAction', 'toastSeq', 'setToast']);
-  for (const [locked, busy] of [[false, false], [true, false], [false, true]]) {
-    let slot, options, closed = false, focused = false, failedAction = 'old', toast;
-    const toastSeq = { current: 2 };
-    const tree = render((type, props, ...children) => ({ type, props, children }), (name, owner) => {
-      slot = name; options = owner; return 'native-team-toggle';
-    }, locked, busy, () => { closed = true; }, { current: { focus: () => { focused = true; } } },
-    value => { failedAction = value; }, toastSeq, value => { toast = value; });
-    assert.equal(slot, 'conversation.input.model.options');
-    assert.equal(tree.children[0], 'native-team-toggle');
-    assert.equal(options.locked, locked || busy);
-    options.dismiss();
-    assert.equal(closed && focused, true, 'disable confirmation closes menu and restores focus');
-    options.reportFailure('Team save rejected');
-    assert.equal(failedAction, null, 'native errors must not offer an unrelated model retry');
-    assert.equal(toast.text, 'Team save rejected');
-    assert.equal(toast.seq, 3);
-  }
+const start = source.indexOf('    function editableModelOptions(');
+const end = source.indexOf('\n    // Separate, durable reply', start);
+const compile = vm.compileFunction(`${source.slice(start, end)}\nreturn { editableModelOptions, AgentSessionOptions };`,
+ ['h', 'useSyncExternalStore', 'useState', 'useEffect', 'useRef', 'ACP_PREFIX', 'Button', 'IconSettingsOutline16']);
+const treeNode = (type, props, ...children) => ({ type, props, children });
+const nodes = tree => !tree || typeof tree !== 'object' ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : [tree, ...nodes(tree.children)];
+function fixture({ config = null, current = { provider: 'acp:fixture', model: 'model' }, pending = null, saving = false, effect = () => {} } = {}) {
+ const values = [config, saving];
+ return compile(treeNode, (_, snapshot) => snapshot(), () => [values.shift(), () => {}], effect, current => ({current}), 'acp:', 'Button', 'SettingsIcon');
+}
+test('native menu options preserve dynamic boolean/select values and exclude routing, reasoning and permissions', () => {
+ const { editableModelOptions } = fixture();
+ const options = [
+  { id: 'model', type: 'select' }, { id: 'budget', type: 'select', role: 'reasoning' },
+  { id: 'effort', type: 'select' }, { id: 'permissions', type: 'select' },
+  { id: 'sandbox', type: 'select' }, { id: 'unknown', type: 'text' },
+  { id: 'fast', type: 'boolean' }, { id: 'format', type: 'select' },
+ ];
+ assert.deepEqual(Array.from(editableModelOptions({ options }), option => option.id), ['fast', 'format']);
 });
-
-test('session-option keyboard events do not select a model; Escape still dismisses', () => {
-  const start = source.indexOf('const onRootKeyDown = (event) => {', source.indexOf('function AgentModelSelect'));
-  const end = source.indexOf('\n      const onRootBlur', start);
-  assert.ok(start > 0 && end > start);
-  class Element {
-    closest(selector) { return selector.includes('.dsh-acp-ms-session-options') ? this : null; }
+test('native options respect host lock, persisted false/empty values, and Escape ownership', async () => {
+ const config = { key: 'acp:fixture/model', options: [
+  { id: 'fast', type: 'boolean', currentValue: true },
+  { id: 'format', type: 'select', currentValue: 'json', options: [{ id: '', label: 'Automatic' }, { id: 'json' }] },
+ ], selections: [{ id: 'fast', value: false }, { id: 'format', value: '' }] };
+ for (const [locked, saving] of [[false, false], [true, false], [false, true]]) {
+  const { AgentSessionOptions } = fixture({ config, saving });
+  let dismissed = false, failure;
+  const tree = AgentSessionOptions({ sessionId: 'session', directory: { subscribe() {}, getSnapshot: () => ({ current: { provider: 'acp:fixture', model: 'model' } }) },
+   rpc: async () => ({}), t: key => key, locked, dismiss: () => { dismissed = true; }, openAgentSettings: () => false, reportFailure: text => { failure = text; } });
+  const checkbox = nodes(tree).find(node => node.type === 'input');
+  const select = nodes(tree).find(node => node.type === 'select');
+  assert.equal(checkbox.props.checked, false); assert.equal(select.props.value, '');
+  assert.equal(checkbox.props.disabled, locked || saving); assert.equal(select.props.disabled, locked || saving);
+  for (const relatedTarget of [null, {}]) {
+   let stopped = false; tree.props.onBlur({ relatedTarget, stopPropagation: () => { stopped = true; } });
+   assert.equal(stopped, saving && relatedTarget === null);
   }
-  const makeHandler = vm.compileFunction(`${source.slice(start, end)}\nreturn onRootKeyDown;`,
-    ['Element', 'open', 'searchRef', 'close']);
-  let closed = false;
-  const handler = makeHandler(Element, true, { current: {} }, () => { closed = true; });
-  for (const key of ['Enter', ' ', 'ArrowDown', 'Home']) {
-    handler({ key, target: new Element(), preventDefault() { assert.fail('Native option owns its key'); } });
-    assert.equal(closed, false);
+  for (const key of ['Enter', ' ', 'ArrowDown', 'Tab', 'Escape']) {
+   let stopped = false; tree.props.onKeyDown({ key, stopPropagation: () => { stopped = true; } });
+   assert.equal(stopped, key !== 'Escape');
   }
-  let prevented = false;
-  handler({ key: 'Escape', target: new Element(), preventDefault() { prevented = true; } });
-  assert.equal(closed && prevented, true);
+  nodes(tree).find(node => node.type === 'Button').props.onClick();
+  assert.equal(dismissed, true); assert.equal(failure, 'error.settingsNav');
+ }
 });

@@ -4,6 +4,30 @@ Configure a coding agent once, then use it either as the current conversation's 
 
 Source and issues: [ChisaAlter/dsh-acp-agents](https://github.com/ChisaAlter/dsh-acp-agents). This repository contains the plugin and its bundled runtime, not the desktop host.
 
+## Install v0.4.5
+
+Download [`dsh-acp-agents-0.4.5.tgz`](https://github.com/ChisaAlter/dsh-acp-agents/releases/download/v0.4.5/dsh-acp-agents-0.4.5.tgz) from the [v0.4.5 release](https://github.com/ChisaAlter/dsh-acp-agents/releases/tag/v0.4.5), then install it into the profile you use:
+
+```sh
+dsh plugin --profile web add ./dsh-acp-agents-0.4.5.tgz
+```
+
+Use your host's bundled CLI for a desktop-managed profile. Restart the host normally after installation, then open **Settings → Agent**. Existing agents, credentials, and conversation mappings are retained. The package is distributed through GitHub Releases, not the npm registry.
+
+### What changed
+
+- Native model menu integration preserves model selection, reasoning, keyboard navigation and Team controls. Models without advertised reasoning no longer receive an invented `medium` setting.
+- The account-settings shortcut opens the existing Agent settings page on standard DSH, including hosts without `settingsNavigation`.
+- Generic ACP select/boolean options, empty Automatic values, v2 credential forms and native background completion use the same capability-driven path across agents.
+- Ordinary sign-in verifies existing native credentials first; explicit reauthentication remains separate. Restoration, cancellation, provider errors and managed child cleanup retain their actual outcome.
+- A paired DSH server update declares provider-managed context for stateful ACP sessions without guessing a context capacity or disabling ordinary LLM protection.
+
+### Supported and pending host behavior
+
+**DSH `0.2.2-rc.2`:** settings navigation and capability-driven reasoning were exercised in the stock Web host. Switching models after a conversation has history requires the paired [server context-ownership update](tools/host-compat/README.md); the plugin archive alone does not update host modules. Windows terminal sign-in also requires the host's native PTY lifecycle fix.
+
+**DSH `0.2.2-rc.3`:** a reported inability to select models remains under investigation. This release has not been runtime-validated against rc.3. Its published source still contains the unknown-context model-switch guard, and the rc.2 server update must not be applied to rc.3.
+
 ## Switch agents in a conversation
 
 1. Open **Settings → Agent**, add an agent instance, complete its authentication, and enable it.
@@ -51,6 +75,8 @@ Standard ACP agents use the same capability-driven path: discover models, dynami
 
 Model changes keep the selected agent model's own reasoning default. The picker only offers reasoning values the agent reports; other discovered model options appear alongside them and are saved per conversation/model. Those options are revalidated against the live session before use. Terminal sign-in uses the host subprocess PTY when available, and an explicit Registry sign-in prepares its distribution first. The optional PTY service is not required for agents that use other authentication methods.
 
+Native configuration updates also refresh the applied model and reasoning state. Automatic/empty reasoning choices use the same value conversion as other select options. Standard ACP v2 `env_var` sign-in methods supply their credential fields directly, without a per-agent field list.
+
 Ordinary sign-in first checks whether the agent can already create a session. Usable native credentials are confirmed without calling `authenticate`, because some agents interpret that call as logging out first. Only an ACP authentication-required response starts interactive sign-in; network and startup failures remain visible errors. **Switch / Re-authenticate** explicitly requests a fresh login. Browser handoffs are shown while waiting, and completion is confirmed by creating a session, not by opening a URL. Cancel and expiry close the owned authentication process. Auth-flow wire ids use protocol-valid slugs while existing credential cache and Antigravity profile paths are retained.
 
 Provider errors and cancellations retain their terminal status. Failed native session restoration reports the original error and retains the saved mapping instead of silently creating a replacement. Native ACP v2 background output resumes through the existing host conversation without issuing a duplicate task prompt. Tool associations are scoped to their owning host conversation.
@@ -61,15 +87,20 @@ Antigravity sessions use separate runtime directories and clean up only their ow
 - A DeepSeek Harness host with Cordis 4, LLM adapter registration, connection, and web-server services.
 - Delegation additionally requires the host's `subagents` and `tools` services with managed local child support (`prepareContinuable` / `startActivation`). Without those services, conversation switching remains available.
 - Managed delegation supports both the nested activation request in host subagent 0.2.1 and the flattened request in 0.2.2. Parent, prompt, model and depth are identical in both representations; compatibility does not retry task admission.
+- Child listing, running-task status, bounded waits and follow-ups support both host control interfaces. The newer descendant listing is restricted to direct children for these operations. MCP ownership follows the current execution route after an agent switch, not the conversation's creation settings.
 - Interactive terminal authentication uses the host's `subprocess.spawnTerminal`. Windows hosts must release the native ConPTY transport after process settlement; updating this plugin does not replace the host's subprocess package.
 
-Install `dsh-acp-agents` through the host's plugin loader. The package declares its server entry, browser client, and composition patch; it does not require changes to the host's source. Produce a distributable archive with `npm pack` and install it through the host's supported local-package flow.
+Install `dsh-acp-agents` through the host's plugin loader. The package declares its server entry, browser client, and composition patch. Produce a distributable archive with `npm pack` and install it through the host's supported local-package flow.
+
+The plugin extends the native model menu through `conversation.input.model.options`; the host keeps ownership of model selection, reasoning, keyboard navigation and Team controls. No browser bundle patch is required. Agent settings activate on standard DSH 0.2.2-rc.2 without desktop-only primitives or `settingsNavigation`. The menu's account-settings button opens the existing settings shell directly at **Agent**: it uses the navigation service where supplied, otherwise shares the standard shell's declared root store and calls its `openSection` action. Windows terminal sign-in still requires the host to release its native PTY after process settlement; the plugin archive cannot update that subprocess library.
 
 ## Configuration and existing data
 
 The plugin stores agents in `$DSH_HOME/acp-agents.json`, external session mappings in `acp-agent-sessions.json`, durable task receipts in `acp-tasks.json`, and account profiles in `acp-profiles/`. Task receipts contain prompts/results and should receive the same protection as conversation logs. If `DSH_HOME` is unset, it uses `~/.dsh`.
 
 Existing agent ids, provider ids (`acp:<instance-id>`), profiles, and session mappings remain usable. Existing runtime cache directories are reused to retain managed installations and authentication. Environment credentials remain in the local configuration file; catalog responses mask secret-shaped values and preserve them when unchanged settings are saved.
+
+An explicit `profileDir` takes precedence over inherited or conflicting profile-home environment variables. Antigravity uses that same path for authentication, sessions and account status; without an explicit profile or `GEMINI_HOME` override, its existing instance-specific profile remains unchanged.
 
 ## Build the bundled runtime
 
@@ -91,9 +122,11 @@ npm run build:runtime
 
 ## Verify changes
 
-Run `npm test` for handoff, discovery, and delegation contracts. Set `DSH_HARNESS_ROOT` to a built DeepSeek Harness checkout, then run `npm run test:host` for the real Cordis, AgentLoop, child lifecycle, ACP subprocess, and HTTP/MCP bridge integration. The integration test uses scripted ACP agents rather than a paid model or a user's account, and stores its artifacts in a new temporary directory.
+Run `npm test` for native menu contribution, handoff, discovery, and delegation contracts. For client activation against real Cordis, set `DSH_CLIENT_HOST_ROOT` to a supported DSH package directory and run `npm run test:client`. Set `DSH_HARNESS_ROOT` to a built DeepSeek Harness checkout, then run `npm run test:host` for the real Cordis, AgentLoop, child lifecycle, ACP subprocess, and HTTP/MCP bridge integration. The integration test uses scripted ACP agents rather than a paid model or a user's account, and stores its artifacts in a new temporary directory.
 
-To verify the shipped desktop contract, set `DSH_INSTALLED_HOST_ROOT` to its `resources/vendor/deepseek-harness` directory and run `npm run test:installed-host`. This loads the installed production host libraries, creates isolated sessions, and runs one scripted delegation through admission, execution and result delivery. An explicit real-account check can additionally set `DSH_NATIVE_HOME`, `DSH_TEST_NATIVE_AGENT` and `DSH_TEST_NATIVE_MODEL`; it uses that configured agent's existing native profile for one short model reply, without starting authentication or changing the daily agent/session/task JSON.
+For the paired server update, set `DSH_COMPAT_HOST_PACKAGE` to the supported host CLI's `package.json` and run `npm run test:host-compat`. This checks the actual published server transformations, ordinary LLM capacity guards, unsupported versions and preparation cleanup without modifying the installed host.
+
+To verify the shipped desktop contract, set `DSH_INSTALLED_HOST_ROOT` to its `resources/vendor/deepseek-harness` directory and run `npm run test:installed-host`. This loads the installed production host libraries and exercises scripted delegation, running status, HTTP/MCP child listing, agent switching with tools, bounded waiting, follow-up recovery, exact earlier results and cancellation in isolated sessions. An explicit real-account check can additionally set `DSH_NATIVE_HOME`, `DSH_TEST_NATIVE_AGENT` and `DSH_TEST_NATIVE_MODEL`; it uses that configured agent's existing native profile for one short model reply, without starting authentication or changing the daily agent/session/task JSON.
 
 ## Current interaction limits
 

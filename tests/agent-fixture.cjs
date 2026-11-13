@@ -45,8 +45,9 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     return;
   }
   if (process.env.ACP_TEST_LOG) fs.appendFileSync(process.env.ACP_TEST_LOG, JSON.stringify({ method, params, pid: process.pid }) + '\n');
-  if (method === 'initialize' && process.env.ACP_TEST_V2) send({ id, result: { protocolVersion: 2, info: { name: 'unknown-v2-fixture', version: '1' }, capabilities: {} } });
-  else if (method === 'initialize') send({ id, result: { protocolVersion: 1, authMethods: process.env.ACP_TEST_TERMINAL ? [{ type: 'terminal', id: 'fixture-terminal', name: 'Fixture terminal sign-in', args: ['--terminal-login'] }] : process.env.ACP_TEST_AUTH ? [{ id: 'fixture-login', name: 'Fixture browser sign-in' }] : [], agentCapabilities: { loadSession: true, promptCapabilities: { image: process.env.ACP_TEST_NO_IMAGES !== '1' } }, agentInfo: { name: 'fixture', version: '1' } } });
+  if (method === 'initialize' && process.env.ACP_TEST_API_METHOD) send({ id, result: { protocolVersion: 2, info: { name: 'unknown-key-fixture', version: '1' }, capabilities: {}, authMethods: [{ methodId: 'generic-key', name: 'Generic key', type: 'env_var', vars: [{ name: 'GENERIC_SERVICE_TOKEN' }], link: 'https://example.com/keys' }] } });
+  else if (method === 'initialize' && process.env.ACP_TEST_V2) send({ id, result: { protocolVersion: 2, info: { name: 'unknown-v2-fixture', version: '1' }, capabilities: {} } });
+  else if (method === 'initialize') send({ id, result: { protocolVersion: 1, authMethods: process.env.ACP_TEST_TERMINAL ? [{ type: 'terminal', id: 'fixture-terminal', name: 'Fixture terminal sign-in', args: ['--terminal-login'] }] : process.env.ACP_TEST_AUTH ? [{ id: 'fixture-login', name: 'Fixture browser sign-in' }] : [], agentCapabilities: { loadSession: true, ...(process.env.ACP_TEST_RESUME ? { sessionCapabilities: { resume: {} } } : {}), promptCapabilities: { image: process.env.ACP_TEST_NO_IMAGES !== '1' } }, agentInfo: { name: 'fixture', version: '1' } } });
   else if (method === 'authenticate') {
     if (process.env.ACP_TEST_AUTH_URL) send({ method: '_codebuddy.ai/authUrl', params: { authUrl: process.env.ACP_TEST_AUTH_URL, provider: 'external' } });
     if (process.env.ACP_TEST_AUTH_OUTCOME === 'hang') return;
@@ -55,7 +56,9 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       else { authenticated = true; send({ id, result: {} }); }
     }, 200);
   }
-  else if (method === 'session/new' || method === 'session/load') {
+  else if (method === 'session/new' || method === 'session/load' || method === 'session/resume') {
+    if (method === 'session/load' && process.env.ACP_TEST_LOAD_FAIL) { send({ id, error: { code: -32601, message: 'load unavailable' } }); return; }
+    if (method === 'session/resume' && process.env.ACP_TEST_RESUME_FAIL) { send({ id, error: { code: -32603, message: 'resume temporarily unavailable' } }); return; }
     if (process.env.ACP_TEST_AUTH_REQUIRED && !authenticated) {
       send({ id, error: { code: -32000, message: 'Authentication required' } }); return;
     }
