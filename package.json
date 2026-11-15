@@ -7,10 +7,11 @@
   "license": "MIT",
   "scripts": {
     "build:runtime": "npm --prefix tools/runtime-build run build",
-    "test": "node --test tests/plugin.test.mjs tests/tasks.test.mjs tests/auth.test.mjs tests/reliability.test.mjs",
+    "test": "node --test tests/plugin.test.mjs tests/tasks.test.mjs tests/auth.test.mjs tests/reliability.test.mjs tests/client-options.test.mjs tests/hardening.test.mjs tests/team.test.mjs",
     "test:client": "node --test tests/client-compat.test.mjs",
     "test:host-compat": "node --test tests/host-compat.test.mjs",
     "test:host": "node tests/host-integration.mjs",
+    "test:team": "node tests/team-integration.mjs",
     "test:installed-host": "node --test tests/installed-host.test.mjs"
   },
   "repository": {

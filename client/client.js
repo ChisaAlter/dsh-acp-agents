@@ -168,6 +168,7 @@ window.__ModuleLoader__.load({
       'action.savedDone': '保存完成',
       'saveFailed': '操作失败：{message}',
       'loadFailed': '读取配置失败：{message}',
+      'storeIssue': '{file} 无法读取（{reason}），原文件已保留为 {preservedAs}。当前从空配置开始；请停止宿主后修复该文件并改回原名。',
       'login.started': '已发起登录流程，请在浏览器中完成授权。',
       'login.callbackHint': '若浏览器中的 localhost 页面打不开，把完整链接粘贴到这里。',
       'login.waitingBrowser': '正在等待浏览器授权…',
@@ -310,6 +311,7 @@ window.__ModuleLoader__.load({
       'action.savedDone': 'Saved',
       'saveFailed': 'Operation failed: {message}',
       'loadFailed': 'Failed to load configuration: {message}',
+      'storeIssue': '{file} could not be read ({reason}). The original was preserved as {preservedAs}; this store started empty. Stop the host, repair that file and restore its name.',
       'login.started': 'Sign-in started. Complete authentication in your browser.',
       'login.callbackHint': 'If the final localhost page does not load, paste its full URL here.',
       'login.waitingBrowser': 'Waiting for browser authorization…',
@@ -1877,6 +1879,15 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               banner.text,
             )
           : null,
+
+        // Unreadable stores persist across actions until the host restarts with a repaired file.
+        ...(catalog?.storeIssues || []).map((issue) =>
+          h(
+            'div',
+            { key: `store-issue:${issue.file}`, className: 'dsh-acp-banner', 'data-error': 'true', role: 'alert' },
+            t('storeIssue', { file: issue.file, reason: issue.reason, preservedAs: issue.preservedAs }),
+          ),
+        ),
 
         /* ACP Split Workspace: Left Provider Rail + Right Selected Provider Detail */
         h(
