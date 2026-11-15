@@ -27,6 +27,51 @@ after(async () => {
   fs.rmSync(suiteHome, { recursive: true });
 });
 
+test('unfinished native tools do not obstruct later text or settled tools; receipts retain nested failures', async () => {
+  const activity = [];
+  const conn = new AcpSessionConnection({ agentConfig: { id: 'background-regression' } });
+  conn.onActivity = value => activity.push(value);
+  const turn = new AcpTurnExecution({ connection: conn });
+  const tool = (id, status, text) => turn.handleEvent({ _tag: 'ToolCallUpdated', toolCall: {
+    toolCallId: id, kind: 'execute', title: id, status,
+    data: { content: text ? [{ type: 'content', content: { type: 'text', text } }] : [] },
+  } });
+  tool('background', 'inProgress');
+  assert.equal(turn.queue.items.length, 0, 'no synchronous Host wait for unfinished native work');
+  turn.handleEvent({ _tag: 'ContentDelta', text: 'Still making progress' });
+  tool('later', 'completed', 'Later tool output');
+  assert.equal((await turn.queue.next()).value.text, 'Still making progress');
+  const later = (await turn.queue.next()).value.entry;
+  assert.equal(later.toolCallId, 'later');
+  assert.equal(later.outputText, 'Later tool output');
+  tool('background', 'failed', 'This MCP connection no longer owns the selected agent.');
+  const failed = (await turn.queue.next()).value.entry;
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.outputText, /no longer owns/);
+  tool('background', 'failed', 'This MCP connection no longer owns the selected agent.');
+  assert.equal(turn.queue.items.length, 0, 'one receipt despite repeated status updates');
+  assert.equal(activity[0].activeTools[0].id, 'background');
+  assert.equal(activity.at(-1).activeTools.length, 0);
+  assert.equal(turn.usage, null, 'unfinished usage is unknown, not measured zero');
+});
+
+test('terminal callbacks racing cancellation retain their service and cannot create new work', async () => {
+  await initAgentRuntime();
+  const conn = new AcpSessionConnection({ cwd: suiteHome, agentConfig: { permissionPolicy: 'auto-allow' } });
+  const { effect } = runtimeBundle();
+  let handlers, creates = 0;
+  conn.api = { assignHandlers: async value => { handlers = value; } };
+  conn.terminals = {
+    create: () => { creates++; return effect.Effect.succeed({ terminalId: 'late' }); },
+    output: () => effect.Effect.fail(new Error('terminal already disposed')),
+  };
+  await conn._wireHandlers();
+  conn.closed = true; conn.terminals = null;
+  await assert.rejects(handlers.handleTerminalOutput({ terminalId: 'late' }), /terminal already disposed/);
+  await assert.rejects(handlers.handleCreateTerminal({ command: 'must not run' }), /connection closed/);
+  assert.equal(creates, 0);
+});
+
 test('native API picker remains host-owned and ACP visibility is projected from current config', async () => {
   assert.doesNotMatch(source, /name: 'conversation.input.model',/);
   assert.match(source, /name: 'conversation.input.model.options',/);

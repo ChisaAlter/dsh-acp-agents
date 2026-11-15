@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { loadAgentsConfig, saveAgentsConfig, loadSessionStore, saveSessionStore } from '../lib/presets.js';
-import { createTaskStore, MAX_SETTLED_TASKS } from '../lib/tasks.js';
+import { createTaskStore } from '../lib/tasks.js';
+import { readJsonStore, writeJsonStore, listStoreIssues } from '../lib/store-file.js';
 import { createTaskCheckout } from '../lib/isolation.js';
 import { acpRuntimePolicy } from '../lib/host-contract.js';
 import { runtimeBundle, initAgentRuntime } from '../lib/agent-runtime.js';
@@ -59,11 +60,12 @@ test('stores containing credentials, prompts and results are owner-only', { skip
   } finally { fs.rmSync(dir, { recursive: true }); }
 });
 
-test('settled receipts are bounded while running and undelivered tasks are retained', () => {
+test('old settled receipts retain exact results and idempotency across restart', async () => {
   const dir = tempDir('acp-task-prune-');
   try {
-    const settled = Array.from({ length: MAX_SETTLED_TASKS + 5 }, (_, index) => ({
-      taskId: `settled-${index}`, parentId: 'parent', childId: `child-${index}`, endedAt: 1000 + index, status: 'completed', deliveryState: 'acknowledged', output: [],
+    const settled = Array.from({ length: 505 }, (_, index) => ({
+      taskId: `settled-${index}`, parentId: 'parent', childId: `child-${index}`, endedAt: 1000 + index, status: 'completed', deliveryState: 'acknowledged',
+      output: [{ type: 'text', text: `result-${index}` }], requestKey: `parent\0request-${index}`, requestArguments: JSON.stringify({ prompt: `work-${index}` }),
     }));
     const kept = [
       { taskId: 'running', parentId: 'parent', childId: 'child-running', status: 'running', deliveryState: 'pending', output: [] },
@@ -73,19 +75,23 @@ test('settled receipts are bounded while running and undelivered tasks are retai
     const store = createTaskStore({}, path.join(dir, 'acp-agents.json'));
     store.save();
     const ids = new Set(JSON.parse(fs.readFileSync(path.join(dir, 'acp-tasks.json'), 'utf8')).tasks.map((task) => task.taskId));
-    assert.equal(ids.size, MAX_SETTLED_TASKS + 2);
+    assert.equal(ids.size, 507);
     assert.ok(ids.has('running') && ids.has('undelivered'));
-    for (let index = 0; index < 5; index++) assert.ok(!ids.has(`settled-${index}`));
-    assert.ok(ids.has(`settled-${MAX_SETTLED_TASKS + 4}`));
-    assert.throws(() => store.get('parent', 'settled-0'), /Unknown task "settled-0"/);
+    const reopened = createTaskStore({}, path.join(dir, 'acp-agents.json'));
+    assert.equal(reopened.get('parent', 'settled-0').output[0].text, 'result-0');
+    const retry = await reopened.once({ id: 'parent' }, 'request-0', { prompt: 'work-0' }, () => assert.fail('must not start a duplicate'));
+    assert.equal(retry.taskId, 'settled-0');
+    assert.equal(retry.recovered, true);
+    await assert.rejects(reopened.once({ id: 'parent' }, 'request-0', { prompt: 'changed' }, () => assert.fail('must not start a duplicate')), /different task arguments/);
   } finally { fs.rmSync(dir, { recursive: true }); }
 });
 
 test('task checkouts are excluded from the parent repository status', async () => {
   const dir = tempDir('acp-worktree-exclude-');
   try {
-    const git = (...args) => execFileSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: dir, encoding: 'utf8' });
+    const git = (...args) => execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args], { cwd: dir, encoding: 'utf8' });
     git('init', '-q');
+    git('config', 'core.autocrlf', 'false');
     fs.writeFileSync(path.join(dir, 'tracked.txt'), 'base\n');
     git('add', 'tracked.txt'); git('commit', '-q', '-m', 'base');
     await createTaskCheckout(dir, 'first');
@@ -136,7 +142,7 @@ test('host acp_result accepts the documented task_id, agent_id and wait_ms forms
   assert.throws(() => tool.execute({ task_id: 'task-1', wait_ms: 30000 }, exec), /wait_ms/);
 });
 
-test('existing loose stores and default profiles are restricted, and stale temporaries removed', { skip: process.platform === 'win32' }, async () => {
+test('existing loose stores and default profiles are restricted without removing temporary files', { skip: process.platform === 'win32' }, async () => {
   const { appendPrivateLog, readJsonStore } = await import('../lib/store-file.js');
   const { createAcpAgentsManager } = await import('../lib/index.js');
   const dir = tempDir('acp-loose-');
@@ -154,7 +160,7 @@ test('existing loose stores and default profiles are restricted, and stale tempo
     try {
       assert.equal(fs.statSync(storeFile).mode & 0o777, 0o600);
       assert.equal(fs.statSync(profiles).mode & 0o777, 0o700);
-      assert.ok(!fs.existsSync(stale) && !fs.existsSync(legacy));
+      assert.ok(fs.existsSync(stale) && fs.existsSync(legacy));
       assert.ok(fs.existsSync(fresh), 'a concurrent writer\'s temporary file is left alone');
     } finally { await manager.dispose(); }
     assert.equal(readJsonStore(path.join(dir, 'missing.json'), { fallback: 'none' }), 'none');
@@ -168,7 +174,7 @@ test('existing loose stores and default profiles are restricted, and stale tempo
   } finally { fs.rmSync(dir, { recursive: true }); }
 });
 
-test('the settings catalog reports a preserved store until it loads cleanly', async (t) => {
+test('the settings catalog reports preserved files after clean reads and a new process', async (t) => {
   quietly(t);
   const { createAcpAgentsManager } = await import('../lib/index.js');
   const { listStoreIssues } = await import('../lib/store-file.js');
@@ -180,11 +186,37 @@ test('the settings catalog reports a preserved store until it loads cleanly', as
     try {
       const issue = (await manager.buildCatalog()).storeIssues.find((item) => item.file === storeFile);
       assert.ok(issue && fs.existsSync(issue.preservedAs));
+      saveAgentsConfig([], storeFile);
+      loadAgentsConfig(storeFile);
+      assert.ok(listStoreIssues().some((item) => item.preservedAs === issue.preservedAs));
+      const script = `import {readJsonStore,listStoreIssues} from ${JSON.stringify(new URL('../lib/store-file.js', import.meta.url).href)}; readJsonStore(process.argv[1]); console.log(JSON.stringify(listStoreIssues()));`;
+      const restarted = JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script, storeFile], { encoding: 'utf8' }));
+      assert.ok(restarted.some((item) => item.preservedAs === issue.preservedAs));
       fs.renameSync(issue.preservedAs, storeFile);
       fs.writeFileSync(storeFile, JSON.stringify({ version: 2, agents: [] }));
       loadAgentsConfig(storeFile);
       assert.ok(!listStoreIssues().some((item) => item.file === storeFile));
     } finally { await manager.dispose(); }
+  } finally { fs.rmSync(dir, { recursive: true }); }
+});
+
+test('store reads preserve old temporary files and failed writes clean only their own file', () => {
+  const dir = tempDir('acp-owned-write-');
+  try {
+    const file = path.join(dir, 'store.json');
+    writeJsonStore(file, '{"ok":true}');
+    const foreign = [`${file}.tmp.keep`, `${file}.tmp-1-1-1`];
+    const old = new Date(Date.now() - 120_000);
+    for (const name of foreign) { fs.writeFileSync(name, 'keep'); fs.utimesSync(name, old, old); }
+    assert.deepEqual(readJsonStore(file), { ok: true });
+    const blocked = path.join(dir, 'blocked.json');
+    fs.mkdirSync(blocked);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      assert.throws(() => writeJsonStore(blocked, '{}'));
+      writeJsonStore(file, '{"ok":true}');
+      assert.deepEqual(fs.readdirSync(dir).filter((name) => name.includes('.tmp')).sort(), foreign.map((name) => path.basename(name)).sort());
+      for (const name of foreign) assert.equal(fs.readFileSync(name, 'utf8'), 'keep');
+    }
   } finally { fs.rmSync(dir, { recursive: true }); }
 });
 

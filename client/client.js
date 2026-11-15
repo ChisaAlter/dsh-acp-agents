@@ -79,6 +79,9 @@ window.__ModuleLoader__.load({
       'delegate.running': '运行中',
       'delegate.waiting_approval': '等待审批',
       'delegate.waiting_question': '等待回答',
+      'delegate.awaiting_activity': '五分钟无更新',
+      'delegate.usage_pending': '用量待结算',
+      'delegate.last_activity': '最近活动',
       'delegate.completed': '已完成',
       'delegate.failed': '失败',
       'delegate.cancelled': '已停止',
@@ -222,6 +225,9 @@ window.__ModuleLoader__.load({
       'delegate.running': 'Running',
       'delegate.waiting_approval': 'Approval needed',
       'delegate.waiting_question': 'Answer needed',
+      'delegate.awaiting_activity': 'No update for 5 min',
+      'delegate.usage_pending': 'Usage pending',
+      'delegate.last_activity': 'Last activity',
       'delegate.completed': 'Completed',
       'delegate.failed': 'Failed',
       'delegate.cancelled': 'Stopped',
@@ -423,6 +429,16 @@ window.__ModuleLoader__.load({
   color: var(--dsw-alias-state-error-primary, #ef4444);
   border-color: rgba(239, 68, 68, 0.35);
 }
+.dsh-acp-store-issue {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 8px;
+  color: var(--dsw-alias-state-error-primary, #ef4444);
+  font-size: 14px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
 
 /* Top 2-Column Agent Switcher Grid + Full-Width Selected Agent Detail Stack (fits 564px Settings .options) */
 .dsh-acp-workspace {
@@ -440,6 +456,9 @@ window.__ModuleLoader__.load({
   width: 100%;
 }
 @media (max-width: 520px) {
+  .dsh-acp-header { flex-wrap: wrap; }
+  .dsh-acp-header-copy { flex-basis: 100%; }
+  .dsh-acp-header-actions { flex-wrap: wrap; }
   .dsh-acp-rail {
     grid-template-columns: 1fr;
   }
@@ -1880,11 +1899,11 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             )
           : null,
 
-        // Unreadable stores persist across actions until the host restarts with a repaired file.
+        // Preserved files remain visible across actions and host restarts.
         ...(catalog?.storeIssues || []).map((issue) =>
           h(
             'div',
-            { key: `store-issue:${issue.file}`, className: 'dsh-acp-banner', 'data-error': 'true', role: 'alert' },
+            { key: `store-issue:${issue.preservedAs}`, className: 'dsh-acp-store-issue', role: 'alert' },
             t('storeIssue', { file: issue.file, reason: issue.reason, preservedAs: issue.preservedAs }),
           ),
         ),
@@ -3100,7 +3119,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
 
     function DelegationRow({ node, openChild, readStatus, t }) {
       const [recovered, setRecovered] = useState(null);
-      const data = { ...node.data, ...recovered };
+      const useRecovered = recovered && !node.data.endedAt
+        && (recovered.endedAt || (recovered.lastActivityAt || 0) > (node.data.lastActivityAt || 0));
+      const data = { ...node.data, ...(useRecovered ? recovered : {}) };
       useEffect(() => {
         if (node.data.endedAt || !readStatus) return undefined;
         let active = true;
@@ -3124,7 +3145,12 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const model = data.modelName || data.model;
       const agentName = data.agentName.replace(/\s*[（(]反重力[）)]/g, '').trim();
       const pendingLabel = data.pendingInteraction ? t(`delegate.waiting_${data.pendingInteraction.kind}`) : null;
-      const details = [t('delegate.child'), agentName, model, data.task, pendingLabel || t(`delegate.${status}`), elapsed, data.diagnostic || data.preview].filter(Boolean).join(' · ');
+      const quiet = status === 'running' && data.quiet;
+      const stateLabel = pendingLabel || (quiet ? t('delegate.awaiting_activity') : t(`delegate.${status}`));
+      const details = [t('delegate.child'), agentName, model, data.task, stateLabel, elapsed,
+        status === 'running' && data.usagePending ? t('delegate.usage_pending') : null,
+        data.lastActivityAt ? `${t('delegate.last_activity')}: ${new Date(data.lastActivityAt).toLocaleTimeString()}` : null,
+        ...(data.activeTools || []).map(tool => tool.title), data.diagnostic || data.preview].filter(Boolean).join(' · ');
       return h('section', { className: 'dsh-acp-child', 'data-acp-delegation': data.childId, 'data-status': status },
         h('button', {
           type: 'button', className: 'dsh-acp-child-open',
@@ -3140,9 +3166,9 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           h('span', { className: 'dsh-acp-child-model' }, model)),
         h('span', { className: 'dsh-acp-child-task' }, status === 'failed' ? data.diagnostic || data.task : data.task),
         h('span', { className: 'dsh-acp-child-status', 'aria-live': 'polite' },
-          h(StateDot, { state: status === 'running' ? 'ongoing' : status === 'completed' ? 'done' : status === 'failed' ? 'error' : 'warning', size: 6 }),
-          pendingLabel || t(`delegate.${status}`)),
-        h('span', { className: 'dsh-acp-child-elapsed' }, elapsed),
+          h(StateDot, { state: quiet || pendingLabel ? 'warning' : status === 'running' ? 'ongoing' : status === 'completed' ? 'done' : status === 'failed' ? 'error' : 'warning', size: 6 }),
+          stateLabel),
+        h('span', { className: 'dsh-acp-child-elapsed' }, status === 'running' && data.usagePending ? `${elapsed} · ${t('delegate.usage_pending')}` : elapsed),
         h(IconChevronRightOutlineRegular, { size: 12 })));
     }
 

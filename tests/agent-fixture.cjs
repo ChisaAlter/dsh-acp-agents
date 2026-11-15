@@ -149,6 +149,22 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       }, 18000);
       return;
     }
+    if (prompt.includes('BACKGROUND_TOOL_FLOW')) {
+      const update = value => send({ method: 'session/update', params: { sessionId: params.sessionId, update: value } });
+      update({ sessionUpdate: 'tool_call', toolCallId: 'slow-background', title: 'Background command still running', kind: 'execute', status: 'in_progress', rawInput: { command: 'background-fixture' } });
+      setTimeout(() => {
+        update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'BACKGROUND_PROGRESS_VISIBLE' } });
+        update({ sessionUpdate: 'tool_call', toolCallId: 'later-complete', title: 'Later result', kind: 'read', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'LATER_TOOL_OUTPUT' } }] });
+      }, 40);
+      const timer = setInterval(() => {
+        if (!fs.existsSync(process.env.ACP_TEST_BACKGROUND_RELEASE)) return;
+        clearInterval(timer);
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'slow-background', status: 'failed', content: [{ type: 'content', content: { type: 'text', text: 'BACKGROUND_FAILURE_DETAIL' } }] });
+        update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'BACKGROUND_FINAL_RESULT' } });
+        send({ id, result: { stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } } });
+      }, 20);
+      return;
+    }
     if (prompt.includes('TOOL_NO_TERMINAL')) {
       send({ method: 'session/update', params: { sessionId: params.sessionId, update: { sessionUpdate: 'tool_call', toolCallId: 'read-no-terminal', title: 'Read package.json', kind: 'read', status: 'in_progress', rawInput: { path: 'package.json' } } } });
       setTimeout(() => {

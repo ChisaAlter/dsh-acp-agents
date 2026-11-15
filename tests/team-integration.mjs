@@ -19,18 +19,23 @@ const teamModule = (name, file) => process.env.DSH_TEAM_MODULES
   ? import(pathToFileURL(path.join(process.env.DSH_TEAM_MODULES, file)).href)
   : import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, `packages/team/${name}/lib/index.js`)).href);
 const { Context } = await load('@deepseek-ai/cordis');
-const { mountAgentLoopTestDependencies } = await load('@deepseek-ai/dsh-agent-loop-testkit');
 const { default: AgentLoop } = await load('@deepseek-ai/dsh-agent-loop');
 const { default: Subagents } = await load('@deepseek-ai/dsh-subagent');
 const Persistence = await load('@deepseek-ai/dsh-session-persistence-jsonl');
 const SessionQuery = await import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, 'packages/session-query/session-query/lib/index.js')).href);
 const { createUserMessage } = await load('@deepseek-ai/dsh-llm');
-const { installModelSelection } = await load('@deepseek-ai/dsh-agent');
+const dependencies = await Promise.all([
+  '@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-session', '@deepseek-ai/dsh-session-projection',
+  '@deepseek-ai/dsh-system-prompt', '@deepseek-ai/dsh-fs-local', '@deepseek-ai/dsh-working-directory',
+  '@deepseek-ai/dsh-tools', '@deepseek-ai/dsh-tool-executor-native', '@deepseek-ai/dsh-agent',
+  '@deepseek-ai/dsh-user-approval', '@deepseek-ai/dsh-user-questions',
+].map(load));
 const { default: SandboxPolicy } = await import(pathToFileURL(path.join(process.env.DSH_HARNESS_ROOT, 'packages/sandbox/sandbox-policy/lib/index.js')).href);
 const { default: TeamService } = await teamModule('agent-team', 'agent-team.mjs');
 const TeamTools = await teamModule('tool-agent-team', 'tool-agent-team.mjs');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-team-'));
+const previousHome = process.env.DSH_HOME;
 process.env.DSH_HOME = root;
 const ctx = new Context();
 const routes = [];
@@ -39,14 +44,9 @@ const server = http.createServer((request, response) => {
   if (route) void route.handler(request, response);
   else { response.writeHead(404); response.end(); }
 });
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const origin = `http://127.0.0.1:${server.address().port}`;
+let origin;
 const fixture = fileURLToPath(new URL('./agent-fixture.cjs', import.meta.url));
 const storeFile = path.join(root, 'acp-agents.json');
-saveAgentsConfig(['alpha', 'beta'].map((id) => ({
-  id, name: id, enabled: true, command: process.execPath, args: [fixture],
-  models: [{ id: 'default', name: 'Fixture default' }], env: { ACP_TEST_LOG: path.join(root, `${id}.jsonl`) },
-})), storeFile);
 
 const checks = [];
 const pass = (label) => { checks.push(label); console.log(`PASS ${label}`); };
@@ -79,7 +79,13 @@ async function until(predicate, label, timeout = 10000) {
 }
 
 try {
-  await mountAgentLoopTestDependencies(ctx, { workingDirectory: true });
+  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  origin = `http://127.0.0.1:${server.address().port}`;
+  saveAgentsConfig(['alpha', 'beta'].map((id) => ({
+    id, name: id, enabled: true, command: process.execPath, args: [fixture],
+    models: [{ id: 'default', name: 'Fixture default' }], env: { ACP_TEST_LOG: path.join(root, `${id}.jsonl`) },
+  })), storeFile);
+  for (const dependency of dependencies) await ctx.plugin(dependency.default || dependency);
   await ctx.plugin(SandboxPolicy);
   await ctx.plugin(Persistence, { root: path.join(root, 'sessions') });
   await ctx.plugin(SessionQuery.default);
@@ -96,7 +102,6 @@ try {
   await until(() => ctx.get('agentTeams') && ctx.tools.get('acp_delegate'), 'services mounted');
 
   const lead = await ctx.agentLoop.create('team-lead', { provider: 'acp:alpha', model: 'default' }, { cwd: root });
-  installModelSelection(lead.ctx, { current: { provider: 'acp:alpha', model: 'default' } });
   const signal = new AbortController().signal;
 
   // Team off: tools are listed, guidance is absent and calls are refused by mode.
@@ -174,5 +179,6 @@ try {
   await ctx.fiber.dispose();
   await runtimeBundle().disposeAgentRuntime();
   await new Promise((resolve) => server.close(resolve));
-  console.log(`Integration artifacts: ${root}`);
+  if (previousHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousHome;
+  fs.rmSync(root, { recursive: true });
 }

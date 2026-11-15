@@ -57,6 +57,11 @@ test('delegation entries stay compact and preserve child navigation and full dia
   assert.equal(fullWidth.children[0].children[1].children[0].children[0], 'Antigravity · Work');
   assert.equal(fullWidth.children[0].children[1].children[1].children[0], 'gemini-4-carbon-high');
   assert.equal(run({ agentName: 'Custom (Work)' }).children[0].children[1].children[0].children[0], 'Custom (Work)');
+  const quiet = run({ quiet: true, usagePending: true, lastActivityAt: Date.now() - 360000, activeTools: [{ title: 'Background terminal' }] });
+  assert.equal(quiet.props['data-status'], 'running', 'inactivity must not pretend to be a failure');
+  assert.match(quiet.children[0].props.title, /delegate.awaiting_activity.*delegate.usage_pending.*Background terminal/);
+  assert.match(quiet.children[0].children[4].children[0], /delegate.usage_pending/);
+  assert.equal(run({ quiet: true, pendingInteraction: { kind: 'question' } }).children[0].children[3].children[1], 'delegate.waiting_question');
 });
 
 test('prompt settlement releases host tool waiters even without terminal tool updates', async () => {
