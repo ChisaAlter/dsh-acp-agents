@@ -55,15 +55,17 @@ function client(extraPrimitives = {}) {
 }
 
 const directory = { getSnapshot: () => ({ status: 'ready', current: null, groups: [], failures: [], pending: null }), subscribe: () => () => {} };
-async function boot(fixture, navigation, initialShell) {
+async function boot(fixture, navigation, initialShell, optionEntries = []) {
   const entries = [];
   const ctx = new Context();
   let shell = initialShell;
   const listeners = new Set();
   const slots = {
     inject: (_name, install) => install(),
-    entriesOfSlot: name => name === 'sidebar.settings' && shell ? [shell] : [],
-    subscribe: (name, listener) => { assert.equal(name, 'sidebar.settings'); listeners.add(listener); return () => listeners.delete(listener); },
+    entriesOfSlot: name => name === 'sidebar.settings' && shell ? [shell]
+      : name === 'conversation.input.model.options' ? optionEntries : [],
+    getVersion: () => 0,
+    subscribe: (name, listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     register(options, component) {
       const entry = { options, component }; entries.push(entry);
       return () => { const index = entries.indexOf(entry); if (index >= 0) entries.splice(index, 1); };
@@ -111,14 +113,48 @@ test('optional navigation still opens Agent settings on hosts that supply it', a
   } finally { await app.ctx.fiber.dispose(); }
 });
 
-test('standard primitives render the public extension without replacing the native picker', async () => {
+test('Agent-first picker shadows only the model seat without claiming native child slots', async () => {
   const fixture = client(); const app = await boot(fixture);
   try {
-    assert.equal(app.entries.some(entry => entry.options.name === 'conversation.input.model'), false);
+    const selector = app.entries.find(entry => entry.options.name === 'conversation.input.model');
+    assert.equal(selector.options.priority, -10);
+    assert.equal(selector.options.children, undefined);
     assert.equal(app.picker.options.children, undefined);
     const tree = expand(fixture.render(app.picker.component, { ...app.picker.options.inject('session'), dismiss() {}, reportFailure() {} }));
     assert.ok(all(tree).some(node => node.props?.icon?.type === 'IconSettingsOutlineRegular'));
     assert.equal(all(tree).some(node => node.type === 'MenuSurface'), false);
+  } finally { await app.ctx.fiber.dispose(); }
+});
+
+test('restored picker reuses the real Team entry callbacks, locale and session hooks', async () => {
+  const fixture = client();
+  const selectTeamMode = () => {};
+  const requestDisableConfirmation = () => {};
+  const native = { options: { id: 'agent-team' }, locale: 'agent-team', component: 'NativeTeamToggle',
+    inject(sessionId) { assert.equal(sessionId, 'session'); return { selectTeamMode, requestDisableConfirmation }; } };
+  const app = await boot(fixture, undefined, undefined, [native]);
+  try {
+    const selector = app.entries.find(entry => entry.options.name === 'conversation.input.model');
+    const useProjection = () => {}, useSession = () => {}, useSessions = () => {};
+    const owner = { locked: true, dismiss() {}, reportFailure() {} };
+    const tree = fixture.render(selector.component, {
+      ...selector.options.inject('session'), useProjection, useSession, useSessions,
+    });
+    const [team] = tree.props.renderHostOptions(owner);
+    assert.equal(team.type, native.component);
+    assert.equal(team.props.selectTeamMode, selectTeamMode);
+    assert.equal(team.props.requestDisableConfirmation, requestDisableConfirmation);
+    assert.equal(team.props.useProjection, useProjection);
+    assert.equal(team.props.useSession, useSession);
+    assert.equal(team.props.useSessions, useSessions);
+    assert.equal(team.props.locked, true);
+    assert.equal(team.props.dismiss, owner.dismiss);
+    assert.equal(team.props.reportFailure, owner.reportFailure);
+    // Opening the restored component must resolve every primitive on the
+    // standard host, not only render the closed trigger.
+    const opened = fixture.render(tree.type, tree.props, [true]);
+    assert.ok(all(opened).some(node => node.type === 'MenuSurface'));
+    assert.ok(all(opened).some(node => node.props?.role === 'searchbox'));
   } finally { await app.ctx.fiber.dispose(); }
 });
 
@@ -146,7 +182,8 @@ test('desktop-provided controls and icons take precedence; text/presence extensi
   try {
     const tree = expand(fixture.render(app.picker.component, { ...app.picker.options.inject('session'), dismiss() {}, reportFailure() {} }));
     assert.ok(all(tree).some(node => node.props?.icon?.type === 'DesktopSettingsIcon'));
-    assert.doesNotMatch(source, /\b(?:FlipText|usePresence)\b/);
+    assert.match(source, /primitives\.FlipText \?\?/);
+    assert.match(source, /primitives\.usePresence \?\?/);
     const catalog = { agents: [{ id: 'claude-code', name: 'Claude Code', models: [], account: {} }] };
     const settings = expand(fixture.render(app.settings.component, app.settings.options.inject(), [catalog, 'claude-code', false]));
     assert.ok(all(settings).some(node => node.type === 'DesktopSettingsSelect'));

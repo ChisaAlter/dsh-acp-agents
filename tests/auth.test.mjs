@@ -110,6 +110,43 @@ test('normal login confirms usable native credentials without destructive authen
   }
 });
 
+test('disabling and reenabling an Agent preserves sign-in, including a disabled cold start without probing', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-auth-toggle-'));
+  const previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = root;
+  const agent = { id: 'toggle-account', name: 'Toggle account', enabled: true, command: process.execPath,
+    args: [fileURLToPath(new URL('./agent-fixture.cjs', import.meta.url))],
+    env: { ACP_TEST_AUTH: '1', ACP_TEST_LOG: path.join(root, 'rpc.jsonl') } };
+  let manager = new AgentAuthManager({});
+  try {
+    await manager.startLogin(agent, { methodId: 'fixture-login' });
+    await until(() => manager.getFlowState(agent.id)?.phase === 'succeeded', 'Existing credentials must be confirmed');
+    assert.equal((await manager.getAgentAccountStatus(agent)).authenticated, true);
+    const before = callsFor(agent).length;
+    const inspect = t.mock.method(runtimeBundle().catalog, 'inspect', async () => { throw new Error('Disabled Agent must not be probed'); });
+    assert.equal((await manager.getAgentAccountStatus({ ...agent, enabled: false }, { forceRefresh: true })).authenticated, true);
+    assert.equal(inspect.mock.callCount(), 0);
+    assert.equal(callsFor(agent).length, before);
+    inspect.mock.restore();
+    assert.equal((await manager.getAgentAccountStatus(agent, { forceRefresh: true })).authenticated, true);
+    await manager.dispose();
+    manager = new AgentAuthManager({});
+    assert.equal((await manager.getAgentAccountStatus({ ...agent, enabled: false })).authenticated, true,
+      'A disabled account still reads its durable confirmation after restart');
+    assert.equal(callsFor(agent).length, before, 'Cold status reads must not spawn the disabled Agent');
+    await manager.markAuthenticated({ ...agent, enabled: false });
+    assert.equal((await manager.getAgentAccountStatus(agent)).authenticated, true);
+    const entry = manager.entries.get(agent.id);
+    await manager.authenticationChanged(agent.id, entry.authState, false);
+    assert.equal((await manager.getAgentAccountStatus({ ...agent, enabled: false })).authenticated, false,
+      'A real sign-out, unlike disable, must clear sign-in');
+  } finally {
+    await manager.dispose();
+    if (previousHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = previousHome;
+    fs.rmSync(root, { recursive: true });
+  }
+});
+
 test('required browser login publishes the private handoff and settles, fails or cancels with subprocess release', async (t) => {
   for (const outcome of ['success', 'fail', 'hang']) await t.test(outcome, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-auth-browser-'));

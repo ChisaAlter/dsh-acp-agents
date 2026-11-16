@@ -72,8 +72,8 @@ test('terminal callbacks racing cancellation retain their service and cannot cre
   assert.equal(creates, 0);
 });
 
-test('native API picker remains host-owned and ACP visibility is projected from current config', async () => {
-  assert.doesNotMatch(source, /name: 'conversation.input.model',/);
+test('Agent-first picker uses the shared directory and ACP visibility is projected from current config', async () => {
+  assert.match(source, /name: 'conversation.input.model',/);
   assert.match(source, /name: 'conversation.input.model.options',/);
   const root = temp(), storeFile = path.join(root, 'agents.json');
   saveAgentsConfig([{ id: 'new-agent', enabled: true, hiddenModels: ['old-hidden'], models: [{ id: 'new-visible' }, { id: 'old-hidden' }] }], storeFile);

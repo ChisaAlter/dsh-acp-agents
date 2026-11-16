@@ -4,6 +4,13 @@
 !/.gitignore
 !/LICENSE
 !/README.md
+!/README.en.md
+!/docs/
+/docs/*
+!/docs/screenshots/
+/docs/screenshots/*
+!/docs/screenshots/agent-picker.png
+!/docs/screenshots/agent-account.png
 !/THIRD_PARTY_NOTICES.md
 !/package.json
 !/cordis.patch.yml

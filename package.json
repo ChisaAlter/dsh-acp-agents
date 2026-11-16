@@ -1,7 +1,7 @@
 {
   "name": "dsh-acp-agents",
   "description": "Independent DeepSeek Harness plugin for configured coding agents, conversation switching, and managed subagent delegation.",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
@@ -66,6 +66,9 @@
     "lib",
     "client",
     "README.md",
+    "README.en.md",
+    "docs/screenshots/agent-picker.png",
+    "docs/screenshots/agent-account.png",
     "THIRD_PARTY_NOTICES.md",
     "tests",
     "tools/runtime-build/build.mjs",
