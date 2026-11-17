@@ -34,7 +34,13 @@ Manage instances and accounts in **Settings → Agent**. In this screenshot, QA 
 
 These screenshots show version 0.4.8 running in Whale Isle with synthetic test Agents. The interface language is Simplified Chinese.
 
-## What's new in 0.4.8
+## What's new in 0.4.9
+
+- Browsing another Agent or model previews its own reasoning levels and session options without borrowing the current Agent's values. Browsing does not change the conversation route; select the model before editing options such as Multitask.
+- Selecting a model keeps the menu open so reasoning and session options can be adjusted immediately.
+- Reserved space for effort labels and save status keeps the composer controls steady. List navigation scrolls only the model list instead of moving the background.
+
+### 0.4.8
 
 - Restored the plugin's Agent-first picker, including model search, keyboard selection, dynamic session options, and native Team controls.
 - Separated Agent availability from account authentication. Disabled Agents still read existing sign-in confirmation without starting an Agent process for status checks.
@@ -58,10 +64,10 @@ Replace `<version>` with the version of the downloaded file, and use the profile
 git clone https://github.com/ChisaAlter/dsh-acp-agents.git
 cd dsh-acp-agents
 npm pack
-dsh plugin --profile web add ./dsh-acp-agents-0.4.8.tgz
+dsh plugin --profile web add ./dsh-acp-agents-0.4.9.tgz
 ```
 
-The current source package version is **0.4.8**. Assets on the releases page correspond to their own tags.
+The current source package version is **0.4.9**. Assets on the releases page correspond to their own tags.
 
 ### 2. Configure an account
 

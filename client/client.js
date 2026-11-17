@@ -200,6 +200,8 @@ window.__ModuleLoader__.load({
       'menu.aria': 'Agent、模型与推理等级',
       'menu.manageAgents': '管理 Agent 与账号设置…',
       'aside.current': '当前',
+      'aside.preview': '预览',
+      'options.selectModelFirst': '选中此模型后可修改会话选项。',
       'aside.noSelection': '未选择模型',
       'agent.defaultName': 'DeepSeek Harness',
       'agent.defaultBadge': '内置 / API',
@@ -346,6 +348,8 @@ window.__ModuleLoader__.load({
       'menu.aria': 'Agent, model, and reasoning effort',
       'menu.manageAgents': 'Manage Agents & Accounts…',
       'aside.current': 'Current',
+      'aside.preview': 'Preview',
+      'options.selectModelFirst': 'Select this model to edit its session options.',
       'aside.noSelection': 'No model selected',
       'agent.defaultName': 'DeepSeek Harness',
       'agent.defaultBadge': 'Built-in / API',
@@ -1129,12 +1133,31 @@ window.__ModuleLoader__.load({
   white-space: nowrap;
 }
 .dsh-acp-ms-trigger-effort {
+  display: inline-grid;
   flex-shrink: 0;
   color: var(--dsw-alias-label-tertiary);
   font-size: 11px;
   padding: 0 5px;
   border-radius: 4px;
   background: var(--dsw-alias-bg-layer-3, rgba(255, 255, 255, 0.05));
+}
+.dsh-acp-ms-effort-reserve,
+.dsh-acp-ms-effort-caption {
+  grid-area: 1 / 1;
+}
+.dsh-acp-ms-effort-reserve {
+  visibility: hidden;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.dsh-acp-ms-trigger-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
 }
 .dsh-acp-ms-chevron {
   flex-shrink: 0;
@@ -1164,7 +1187,7 @@ window.__ModuleLoader__.load({
   z-index: 1200;
   width: 620px;
   max-width: calc(100vw - 24px);
-  height: 380px;
+  height: 480px;
   max-height: calc(100vh - 24px);
   padding: 0;
   display: flex;
@@ -1247,6 +1270,7 @@ window.__ModuleLoader__.load({
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   gap: 1px;
   padding-right: 2px;
 }
@@ -1469,6 +1493,8 @@ window.__ModuleLoader__.load({
   padding: 10px 12px;
   border-left: 0.5px solid var(--dsw-alias-border-l2);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .dsh-acp-ms-aside > * {
   flex-shrink: 0;
@@ -1500,6 +1526,14 @@ window.__ModuleLoader__.load({
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+.dsh-acp-ms-boolean-option {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
 }
 .dsh-acp-ms-aside-option {
   display: flex;
@@ -3591,7 +3625,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const toastSeq = useRef(0);
       // Last failed model selection — drives the toast's 重试 action.
       const [failedAction, setFailedAction] = useState(null);
-      const [optionSelections, setOptionSelections] = useState([]);
+      const [optionState, setOptionState] = useState(null);
       const [savingOption, setSavingOption] = useState(null);
 
       const rootRef = useRef(null);
@@ -3602,6 +3636,8 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       const itemRefs = useRef([]);
       const [menuPos, setMenuPos] = useState(null);
       const id = useId();
+      const loadRef = useRef(load);
+      loadRef.current = load;
 
       const refreshAcpCatalog = useCallback(() => {
         if (typeof rpc !== 'function') return;
@@ -3616,10 +3652,10 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
 
       useEffect(() => {
         if (available) {
-          load();
+          loadRef.current();
           refreshAcpCatalog();
         }
-      }, [available, load, refreshAcpCatalog]);
+      }, [available, directory, refreshAcpCatalog]);
 
       useEffect(() => {
         if (!open || lastActionRef.current !== 'load') return;
@@ -3792,18 +3828,6 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               ),
         [allChoices, state?.current],
       );
-      useEffect(() => {
-        let active = true;
-        setOptionSelections([]);
-        if (sessionId && currentCategory.acpAgentId && state.current?.model) {
-          rpc('session/options', { sessionId, agentId: currentCategory.acpAgentId, model: state.current.model })
-            .then((result) => { if (active) setOptionSelections(result.selections || []); })
-            .catch((error) => { if (active) { toastSeq.current += 1; setToast({ seq: toastSeq.current, text: error.message }); } });
-        }
-        return () => { active = false; };
-      }, [sessionId, currentCategory.acpAgentId, state.current?.model, rpc]);
-      const editableOptions = editableModelOptions(currentChoice?.model);
-
       const effectiveActiveTab = filterTabs.some((tab) => tab.id === activeTab)
         ? activeTab
         : (filterTabs[0]?.id ?? 'builtin');
@@ -3851,6 +3875,29 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
         highlightedIndex ?? Math.max(0, currentVisibleIndex),
         Math.max(0, visibleModels.length - 1),
       );
+      // Browsing a provider/model is not a session selection. Keep the
+      // trigger/checkmark on current, and drive the whole aside from ONE
+      // candidate so another agent's capabilities/values cannot leak into it.
+      const candidate = visibleModels[activeModelIndex];
+      const previewChoice = candidate && allChoices.find((choice) =>
+        choice.category.id === candidate.provider && choice.model.id === candidate.model);
+      const previewCategory = previewChoice?.category;
+      const previewModel = previewChoice?.model;
+      const previewIsCurrent = Boolean(previewChoice
+        && previewCategory.id === state?.current?.provider && previewModel.id === state?.current?.model);
+      const previewKey = JSON.stringify([sessionId, previewCategory?.id, previewModel?.id]);
+      const editableOptions = editableModelOptions(previewModel);
+      const optionsReady = optionState?.key === previewKey;
+      const optionSelections = optionsReady ? optionState.selections : [];
+      useEffect(() => {
+        let active = true;
+        if (open && sessionId && previewCategory?.acpAgentId && editableOptions.length > 0) {
+          rpc('session/options', { sessionId, agentId: previewCategory.acpAgentId, model: previewModel.id })
+            .then((result) => { if (active) setOptionState({ key: previewKey, selections: result.selections || [] }); })
+            .catch((error) => { if (active) { toastSeq.current += 1; setToast({ seq: toastSeq.current, text: error.message }); } });
+        }
+        return () => { active = false; };
+      }, [open, sessionId, previewKey, editableOptions.length, rpc]);
 
       const reasoning = currentChoice?.model?.reasoning;
       const effectiveEffort = reasoning === undefined
@@ -3863,21 +3910,23 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
             ? t('effort.providerDefault')
             : reasoning.efforts.find((level) => level.id === effectiveEffort)?.name ?? effectiveEffort;
 
+      const previewReasoning = previewModel?.reasoning;
+      const previewEffort = previewIsCurrent ? effectiveEffort : previewReasoning?.defaultEffort;
       const effortChoices = useMemo(
         () =>
-          reasoning === undefined
+          previewReasoning === undefined
             ? []
             : [
-                ...(reasoning.defaultEffort === undefined
+                ...(previewReasoning.defaultEffort === undefined
                   ? [{ key: 'provider-default', effort: undefined, label: t('effort.providerDefault') }]
                   : []),
-                ...reasoning.efforts.map((effort) => ({
+                ...previewReasoning.efforts.map((effort) => ({
                   key: `effort:${effort.id}`,
                   effort: effort.id,
                   label: effort.name,
                 })),
               ],
-        [reasoning, t],
+        [previewReasoning, t],
       );
 
       const busy = Boolean(locked || (state?.pending !== null && state?.pending !== undefined)) || enablingAgentId !== null;
@@ -3903,9 +3952,17 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
 
       useLayoutEffect(() => {
         if (open && activeModelIndex >= 0) {
-          itemRefs.current[activeModelIndex]?.scrollIntoView?.({ block: 'nearest' });
+          // scrollIntoView also scrolls ancestors outside this fixed portal.
+          // Keyboard/highlight movement only owns the model list's scroll.
+          const list = groupsRef.current;
+          const item = itemRefs.current[activeModelIndex];
+          if (!list || !item) return;
+          const bounds = list.getBoundingClientRect();
+          const row = item.getBoundingClientRect();
+          if (row.top < bounds.top) list.scrollTop += row.top - bounds.top;
+          else if (row.bottom > bounds.bottom) list.scrollTop += row.bottom - bounds.bottom;
         }
-      }, [open, activeModelIndex, visibleModels]);
+      }, [open, activeModelIndex, effectiveActiveTab, query]);
 
       useLayoutEffect(() => {
         if (!available || !mounted) {
@@ -3923,7 +3980,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           let y = rect.top - 8 - lh;
           if (lw > 0) x = Math.min(Math.max(x, MARGIN), window.innerWidth - lw - MARGIN);
           if (lh > 0) y = Math.min(Math.max(y, MARGIN), window.innerHeight - lh - MARGIN);
-          setMenuPos({ left: x, top: y });
+          setMenuPos((current) => current?.left === x && current?.top === y ? current : { left: x, top: y });
         };
         place();
         window.addEventListener('scroll', place, true);
@@ -3936,7 +3993,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
           window.removeEventListener('scroll', place, true);
           window.removeEventListener('resize', place);
         };
-      }, [available, mounted, open, activeTab, state, query, acpCatalog]);
+      }, [available, mounted, open]);
 
       if (!available) return null;
 
@@ -4029,7 +4086,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
         void chooseModel(failed.selection, failed.category);
       };
 
-      const chooseModel = async (selection, category, keepOpen = false) => {
+      const chooseModel = async (selection, category, keepOpen = true) => {
         // Session config options may change with the model. Let the new ACP
         // model keep its own default; effort changes are an explicit action.
         if (category?.isExternal) selection = { provider: selection.provider, model: selection.model };
@@ -4051,23 +4108,25 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
       };
 
       const chooseEffort = (effort) => {
-        if (!state?.current) return;
-        if (effectiveEffort === effort) return;
+        if (!previewChoice) return;
+        if (previewIsCurrent && previewEffort === effort) return;
         submitSelection(
           {
-            provider: state.current.provider,
-            model: state.current.model,
+            provider: previewCategory.id,
+            model: previewModel.id,
             ...(effort === undefined ? {} : { reasoningEffort: effort }),
           },
           true,
+          previewCategory,
         );
       };
       const chooseOption = async (option, value) => {
-        if (busy || !sessionId || savingOption) return;
+        if (busy || !sessionId || savingOption || !previewIsCurrent || !optionsReady) return;
         setSavingOption(option.id);
         try {
-          const result = await rpc('session/options', { sessionId, agentId: currentCategory.acpAgentId, model: state.current.model, option: { id: option.id, value } });
-          setOptionSelections(result.selections || []);
+          const result = await rpc('session/options', { sessionId, agentId: previewCategory.acpAgentId, model: previewModel.id, option: { id: option.id, value } });
+          setOptionState((current) => current?.key === previewKey
+            ? { key: previewKey, selections: result.selections || [] } : current);
         } catch (error) { announceFailure(error); }
         finally { setSavingOption(null); }
       };
@@ -4203,8 +4262,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                   : { reasoningEffort: highlighted.reasoningEffort }),
               },
               highlighted.category,
-              // ACP runtime: Shift+Enter selects without closing the picker.
-              event.shiftKey,
+              true,
             );
           }
           return;
@@ -4323,13 +4381,17 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               )
             : h(FlipText, { className: 'dsh-acp-ms-trigger-label', text: modelLabel }),
           effortLabel !== undefined
-            ? h(FlipText, { className: 'dsh-acp-ms-trigger-effort', text: effortLabel })
+            ? h('span', { className: 'dsh-acp-ms-trigger-effort' },
+                [t('effort.providerDefault'), ...(reasoning?.efforts || []).map((level) => level.name)].map((label, index) =>
+                  h('span', { key: index, className: 'dsh-acp-ms-effort-reserve', 'aria-hidden': true }, label)),
+                h(FlipText, { className: 'dsh-acp-ms-effort-caption', text: effortLabel }))
             : null,
-          busy || waiting
-            ? h(StateDot, { state: 'ongoing', size: 16 })
-            : h(IconChevronDownOutlineRegular, {
+          h('span', { className: 'dsh-acp-ms-trigger-status', 'aria-hidden': true },
+            busy || waiting
+              ? h(StateDot, { state: 'ongoing', size: 16 })
+              : h(IconChevronDownOutlineRegular, {
                 className: `dsh-acp-ms-chevron${open ? ' dsh-acp-ms-chevron-open' : ''}`,
-              }),
+              })),
         ),
         mounted
           && createPortal(
@@ -4579,22 +4641,22 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
               h(
                 'div',
                 { className: 'dsh-acp-ms-aside' },
-                h('div', { className: 'dsh-acp-ms-aside-title' }, t('aside.current')),
+                h('div', { className: 'dsh-acp-ms-aside-title' }, t(previewIsCurrent ? 'aside.current' : 'aside.preview')),
                 h(
                   'div',
-                  { className: 'dsh-acp-ms-aside-model', title: triggerTitle },
-                  state?.current ? modelLabel : t('aside.noSelection'),
+                  { className: 'dsh-acp-ms-aside-model', title: previewModel?.name },
+                  previewModel?.name || t('aside.noSelection'),
                 ),
                 h(
                   'div',
                   { className: 'dsh-acp-ms-aside-meta' },
-                  h('span', null, `${isExternalAgent ? 'ACP' : 'API'} · ${agentDisplayName}`),
-                  currentCategory?.vendor ? h('span', null, currentCategory.vendor) : null,
-                  isExternalAgent
+                  previewCategory ? h('span', null, `${previewCategory.isExternal ? 'ACP' : 'API'} · ${previewCategory.name}`) : null,
+                  previewCategory?.vendor ? h('span', null, previewCategory.vendor) : null,
+                  previewCategory?.isExternal
                     ? h(
                         'span',
                         null,
-                        currentCategory?.enabled ? t('agent.enabledBadge') : t('agent.disabledBadge'),
+                        previewCategory.enabled ? t('agent.enabledBadge') : t('agent.disabledBadge'),
                       )
                     : null,
                 ),
@@ -4621,7 +4683,7 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                         'div',
                         { className: 'dsh-acp-ms-aside-list', role: 'group', 'aria-label': t('menu.effort') },
                         effortChoices.map((choice) => {
-                          const active = effectiveEffort === choice.effort;
+                          const active = previewEffort === choice.effort;
                           return h(
                             'button',
                             {
@@ -4645,13 +4707,15 @@ html[data-ds-theme-source="dark"] .dsh-acp-child-icon img { filter: brightness(0
                   : null,
                 editableOptions.length > 0 && !sessionId
                   ? h('div', { className: 'dsh-acp-ms-aside-meta' }, t('options.needsSession')) : null,
+                editableOptions.length > 0 && sessionId && !previewIsCurrent
+                  ? h('div', { className: 'dsh-acp-ms-aside-meta' }, t('options.selectModelFirst')) : null,
                 editableOptions.map((option) => {
                   const value = optionSelections.find((entry) => entry.id === option.id)?.value ?? option.currentValue;
-                  return h('label', { key: option.id, className: 'dsh-acp-ms-aside-list', title: option.description || '' },
+                  return h('label', { key: option.id, className: `dsh-acp-ms-aside-list${option.type === 'boolean' ? ' dsh-acp-ms-boolean-option' : ''}`, title: option.description || '' },
                     h('span', { className: 'dsh-acp-ms-aside-title' }, option.name || option.label || option.id),
                     option.type === 'boolean'
-                      ? h('input', { type: 'checkbox', checked: value === true, disabled: !sessionId || busy || savingOption !== null, onChange: (event) => void chooseOption(option, event.target.checked) })
-                      : h('select', { className: 'dsh-acp-settings-select', value: value ?? '', disabled: !sessionId || busy || savingOption !== null, onChange: (event) => void chooseOption(option, event.target.value) },
+                      ? h('input', { type: 'checkbox', checked: value === true, disabled: !sessionId || busy || savingOption !== null || !previewIsCurrent || !optionsReady, onChange: (event) => void chooseOption(option, event.target.checked) })
+                      : h('select', { className: 'dsh-acp-settings-select', value: value ?? '', disabled: !sessionId || busy || savingOption !== null || !previewIsCurrent || !optionsReady, onChange: (event) => void chooseOption(option, event.target.value) },
                           value === undefined ? h('option', { value: '', disabled: true }, t('effort.providerDefault')) : null,
                           (option.options || []).map((choice) => h('option', { key: choice.id, value: choice.id }, choice.name || choice.label || choice.id))));
                 }),

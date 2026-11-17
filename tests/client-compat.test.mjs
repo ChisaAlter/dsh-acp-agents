@@ -218,3 +218,47 @@ test('standard shell navigation shares the root handle, opens the Agent section 
     assert.ok(restored); assert.notEqual(restored, bridge);
   } finally { await app.ctx.fiber.dispose(); }
 });
+
+test('Agent picker previews candidate capabilities without borrowing the current agent values or closing on selection', async () => {
+  const fixture = client(); const app = await boot(fixture);
+  try {
+    const selector = app.entries.find(entry => entry.options.name === 'conversation.input.model');
+    const wrapped = fixture.render(selector.component, selector.options.inject('session'));
+    const catalog = [
+      { id: 'devin', name: 'Devin', enabled: true, models: [{ id: 'swe', name: 'SWE', efforts: [{ id: 'medium', name: 'Medium' }] }] },
+      { id: 'buddy', name: 'CodeBuddy', enabled: true, models: [
+        { id: 'hy4', name: 'Hy4', efforts: [{ id: 'on', name: 'On (default)' }], options: [{ id: 'multitask', name: 'Multitask', type: 'boolean', currentValue: false }] },
+        { id: 'fixed', name: 'Fixed' },
+      ] },
+    ];
+    const current = { provider: 'acp:devin', model: 'swe', reasoningEffort: 'medium' };
+    const submitted = []; const writes = [];
+    const props = { ...wrapped.props,
+      directory: { subscribe: () => () => {}, getSnapshot: () => ({ current, pending: null, groups: [], failures: [], status: 'ready' }) },
+      select: async selection => { submitted.push(selection); return { ok: true }; },
+      rpc: async (method, input) => { writes.push({ method, input }); return { selections: [] }; },
+    };
+    const tree = fixture.render(wrapped.type, props, [true, 'acp:buddy', catalog]);
+    const aside = all(tree).find(node => node.props?.className === 'dsh-acp-ms-aside');
+    assert.equal(all(aside).some(node => node.children?.includes('aside.preview')), true);
+    assert.equal(all(aside).some(node => node.children?.includes('Hy4')), true);
+    assert.equal(all(aside).some(node => node.children?.includes('On (default)')), true);
+    assert.equal(all(aside).some(node => node.children?.includes('Medium')), false);
+    const checkbox = all(aside).find(node => node.type === 'input' && node.props.type === 'checkbox');
+    assert.equal(checkbox.props.disabled, true, 'preview is read-only until its model is selected');
+    await checkbox.props.onChange({ target: { checked: true } });
+    assert.equal(writes.length, 0);
+    const effort = all(aside).find(node => node.type === 'button' && node.children?.some(child => child?.children?.includes('On (default)')));
+    effort.props.onClick();
+    assert.deepEqual({ ...submitted[0] }, { provider: 'acp:buddy', model: 'hy4', reasoningEffort: 'on' });
+    const row = all(tree).find(node => node.props?.role === 'menuitemradio' && node.props.title === 'Hy4');
+    await row.props.onClick();
+    assert.equal(submitted[1].provider, 'acp:buddy');
+    // closeAfterSelection requires queueMicrotask + trigger focus. Neither is
+    // available in this host fixture: default model selection must stay open.
+    const fixed = fixture.render(wrapped.type, props, [true, 'acp:buddy', catalog, '', 1]);
+    const fixedAside = all(fixed).find(node => node.props?.className === 'dsh-acp-ms-aside');
+    assert.equal(all(fixedAside).some(node => node.props?.role === 'group'), false);
+    assert.equal(all(fixedAside).some(node => node.type === 'input'), false);
+  } finally { await app.ctx.fiber.dispose(); }
+});

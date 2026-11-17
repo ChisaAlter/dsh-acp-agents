@@ -34,7 +34,13 @@
 
 截图来自 0.4.8 在鲸屿中的实际运行，使用合成测试 Agent；界面语言为简体中文。
 
-## 0.4.8 更新
+## 0.4.9 更新
+
+- 浏览另一个 Agent 或模型时，右栏同步预览它自己的推理等级和会话选项，不再混用当前 Agent 的参数。浏览不会切换会话；选中模型后可修改 Multitask 等选项。
+- 选中模型后菜单保持打开，可以直接继续设置推理强度，无需再次打开选择器。
+- 为强度标签和保存状态保留稳定宽度，列表导航只滚动模型列表，避免调整参数时底部控件和背景跟着移动。
+
+### 0.4.8
 
 - 恢复插件的 Agent 分栏选择器，保留模型搜索、键盘选择、动态会话选项及原生团队协作控件。
 - 将 Agent 启用状态与账号认证状态分离；关闭 Agent 时仍读取已有认证标记，不为查询状态启动已关闭的 Agent。
@@ -58,10 +64,10 @@ dsh plugin --profile web add "./dsh-acp-agents-<版本号>.tgz"
 git clone https://github.com/ChisaAlter/dsh-acp-agents.git
 cd dsh-acp-agents
 npm pack
-dsh plugin --profile web add ./dsh-acp-agents-0.4.8.tgz
+dsh plugin --profile web add ./dsh-acp-agents-0.4.9.tgz
 ```
 
-当前源码包版本为 **0.4.8**；发布页中的包以其对应标签为准。
+当前源码包版本为 **0.4.9**；发布页中的包以其对应标签为准。
 
 ### 2. 配置账号
 
